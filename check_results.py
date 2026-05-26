@@ -9,7 +9,7 @@ Usage
     python check_results.py <track_dir>
     python check_results.py data/Tienshan/D107_NORD
 
-    # Prepare input files for invers_disp2coef.py only, then exit:
+    # Prepare input files for invers_temp.py only, then exit:
     python check_results.py data/Tienshan/D107_NORD --prepare
 
     # Explicit paths:
@@ -23,7 +23,7 @@ Arguments
   --aux         AUX directory (auto-detected as sibling AUX/ if omitted).
   --save        Output directory for figures (default: <track_dir>/VALIDATION/).
   --no-display  Do not call plt.show() — useful for batch/headless runs.
-  --prepare     Only prepare invers_disp2coef.py input files, skip plots.
+  --prepare     Only prepare invers_temp.py input files, skip plots.
 
 Directory convention
 --------------------
@@ -33,7 +33,7 @@ Directory convention
       ├── AUX/         auxiliary data (baseline.rsc, list_iw*_sd_*.txt, …)
       └── VALIDATION/  figures written here (created automatically)
 
-Step 0 — Prepare invers_disp2coef.py inputs (always runs first)
+Step 0 — Prepare invers_temp.py inputs (always runs first)
 ----------------------------------------------------------------
   Reads AUX/baseline.rsc  → TS/list_images.txt
   Filters list_images.txt against TS/RMSdate.txt (removes missing dates,
@@ -42,7 +42,7 @@ Step 0 — Prepare invers_disp2coef.py inputs (always runs first)
   TS/RMSdate.txt col 3     → TS/inrms.txt
   AUX/list_ramp_sigma_inverted_img.txt → TS/ (filtered copy)
   col 2 of ramp_sigma      → TS/inaps.txt
-  Prints the ready-to-run invers_disp2coef.py command.
+  Prints the ready-to-run invers_temp.py command.
 
 Steps 1–12 — Validation plots (skipped if --prepare)
 -----------------------------------------------------
@@ -57,13 +57,13 @@ Steps 1–12 — Validation plots (skipped if --prepare)
   9.  Bt histogram (ascending order) + unwrapping fraction vs Bt / season
  10.  RMS per date + RMS per ifg vs Bt
  11.  Interferogram network             (blue = kept, red = removed)
- 12.  Per-image uncertainty σ vs time   (sigma_N.txt from invers_disp2coef)
+ 12.  Per-image uncertainty σ vs time   (sigma_N.txt from invers_temp)
       Coefficient maps                  (lin_coeff, ampwt_coeff, phiwt_coeff)
       AUX PNG images                    (burst maps, SD maps, …)
 
 Dependencies
 ------------
-  numpy, matplotlib, rasterio
+  numpy, matplotlib, gdal (osgeo)
   mplcursors  (optional — enables date tooltip on scatter plots)
     pip install mplcursors
 """
@@ -624,7 +624,7 @@ def _plot_network_ax(ax, ifg_list, bl_map):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  11  sigma_N.txt — per-image uncertainty from invers_disp2coef.py
+#  11  sigma_N.txt — per-image uncertainty from invers_temp.py
 # ─────────────────────────────────────────────────────────────────────────────
 def _load_list_images(ts_dir):
     fpath = os.path.join(ts_dir, "list_images.txt")
@@ -663,7 +663,7 @@ def plot_sigma_vs_time(ts_dir, save_dir, display):
                 linewidth=0.8, label=f"iter {niter}")
     ax.set_xlabel("Date (decimal year)")
     ax.set_ylabel("sigma (per-image uncertainty)")
-    ax.set_title("Per-image uncertainty vs time (invers_disp2coef iterations)")
+    ax.set_title("Per-image uncertainty vs time (invers_temp iterations)")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     _savefig(fig, save_dir, "check_sigma_vs_time.png")
@@ -693,17 +693,34 @@ def _get_dims(ts_dir):
 
 def _read_coeff_map(ts_dir, name):
     """
-    Read a _coeff map from invers_disp2coef.py.
-    Tries GeoTIFF first, then ENVI .r4.
+    Read a _coeff map produced by invers_temp.py or invers_temp.py.
+    Tries GeoTIFF (.tif/.tiff) first using gdal, then ENVI .r4.
     Returns (array float32, source_path) or (None, None).
     """
+    try:
+        from osgeo import gdal as _gdal
+        _gdal_ok = True
+    except ImportError:
+        _gdal_ok = False
     for ext in [".tif", ".tiff"]:
         tif = os.path.join(ts_dir, f"{name}_coeff{ext}")
         if os.path.exists(tif):
+            if _gdal_ok:
+                try:
+                    ds = _gdal.Open(tif)
+                    if ds is not None:
+                        arr = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                        nd  = ds.GetRasterBand(1).GetNoDataValue()
+                        if nd is not None:
+                            arr[arr == nd] = np.nan
+                        del ds
+                        return arr, tif
+                except Exception as e:
+                    logger.warning(f"gdal cannot read {tif}: {e}")
+            # fallback: matplotlib imread (works for single-band float tif)
             try:
-                import rasterio
-                with rasterio.open(tif) as src:
-                    return src.read(1).astype(np.float32), tif
+                arr = plt.imread(tif).astype(np.float32)
+                return arr, tif
             except Exception:
                 pass
     r4 = os.path.join(ts_dir, f"{name}_coeff.r4")
@@ -753,7 +770,7 @@ def plot_coeff_maps(ts_dir, save_dir, display):
         ax.set_title(f"{title}\n{os.path.basename(src)}", fontsize=9)
         ax.axis("off")
 
-    fig.suptitle("invers_disp2coef.py — output maps", fontsize=11)
+    fig.suptitle("invers_temp.py — output maps", fontsize=11)
     fig.tight_layout()
     _savefig(fig, save_dir, "check_coeff_maps.png")
     if display:
@@ -965,12 +982,12 @@ def _resolve_dirs(track_dir_or_ts, aux_override=None, save_override=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  0  Prepare input files for invers_disp2coef.py
+#  0  Prepare input files for invers_temp.py
 # ─────────────────────────────────────────────────────────────────────────────
 def prepare_inversion(ts_dir, aux_dir):
     """
     Build list_images.txt, inrms.txt and inaps.txt in ts_dir,
-    ready for invers_disp2coef.py.
+    ready for invers_temp.py.
 
     Equivalent awk steps:
       awk '{print 0,$1,0,$5,0,$2}' baseline.rsc > list_images.txt
@@ -1094,7 +1111,7 @@ def prepare_inversion(ts_dir, aux_dir):
                 "CNES_DTs_geo_8rlks.tiff")
     print(f"""
   Run from {ts_dir}:
-    python invers_disp2coef.py \\
+    python invers_temp.py \\
         --cube={cube} \\
         --list_images=list_images.txt \\
         --rms=inrms.txt \\
@@ -1126,7 +1143,7 @@ Examples
     parser.add_argument("--no-display", action="store_true",
                         help="Do not call plt.show() (batch/headless mode)")
     parser.add_argument("--prepare", action="store_true",
-                        help="Prepare input files for invers_disp2coef.py "
+                        help="Prepare input files for invers_temp.py "
                              "(list_images.txt, inrms.txt, inaps.txt) and exit")
     args = parser.parse_args()
 
@@ -1140,7 +1157,7 @@ Examples
     print(f"Output dir : {save_dir}")
 
     # ── Step 0: prepare inversion inputs ────────────────────────────────────
-    print("\n[0] Preparing invers_disp2coef.py input files …")
+    print("\n[0] Preparing invers_temp.py input files …")
     prepare_inversion(ts_dir, aux_dir)
     if args.prepare:
         print("--prepare: done. Exiting before validation plots.")
@@ -1184,8 +1201,8 @@ Examples
     print("[12/13] Velocity and seasonal maps …")
     plot_velocity_maps(ts_dir, save_dir, display)
 
-    print("[13/13] AUX PNG images …")
-    display_aux_images(aux_dir, save_dir, display)
+    # print("[13/13] AUX PNG images …")
+    # display_aux_images(aux_dir, save_dir, display)
 
     print("\nAll done.")
 
