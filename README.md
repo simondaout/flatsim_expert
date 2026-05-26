@@ -82,7 +82,7 @@ Key options:
 
 ```bash
 cd data/Tienshan/D107_NORD/TS
-python invers_disp2coef.py \
+python invers_temp.py \
     --cube=CNES_DTs_geo_8rlks.tiff \
     --list_images=list_images.txt \
     --rms=inrms.txt --aps=inaps.txt \
