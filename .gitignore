@@ -1,0 +1,9 @@
+data/
+*.tiff
+*.tif
+*.r4
+*.eps
+*.png
+__pycache__/
+*.pyc
+.DS_Store
