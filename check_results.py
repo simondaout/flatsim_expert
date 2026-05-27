@@ -57,7 +57,7 @@ Steps 1–12 — Validation plots (skipped if --prepare)
   9.  Bt histogram (ascending order) + unwrapping fraction vs Bt / season
  10.  RMS per date + RMS per ifg vs Bt
  11.  Interferogram network             (blue = kept, red = removed)
- 12.  Per-image uncertainty σ vs time   (sigma_N.txt from invers_temp)
+ 12.  Per-image APS vs time             (APS_N.txt from invers_temp)
       Coefficient maps                  (lin_coeff, ampwt_coeff, phiwt_coeff)
       AUX PNG images                    (burst maps, SD maps, …)
 
@@ -472,16 +472,30 @@ def plot_rms_interfero(ts_dir, save_dir, display):
         for r, v in sorted(high_rms, key=lambda x: -x[1]):
             print(f"    {r['date1']} – {r['date2']}  RMS={v:.3f}")
 
-    # scatter vs Bt
-    fig, ax = plt.subplots(figsize=(8, 4))
-    sc = ax.scatter(bt, rms, c=rms, cmap="RdYlGn_r", s=12, alpha=0.8, vmin=0, vmax=1.5)
-    plt.colorbar(sc, ax=ax, label="RMS (rad)")
-    ax.axhline(0.9, color="red", ls="--", lw=0.8, label="RMS = 0.9")
-    ax.set_xlabel("Temporal baseline (yr)")
-    ax.set_ylabel("RMS (rad)")
-    ax.set_title("Interferogram RMS vs temporal baseline")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 4))
+
+    # panel 1 — RMS vs temporal baseline
+    sc = ax1.scatter(bt, rms, c=rms, cmap="RdYlGn_r", s=12, alpha=0.8, vmin=0, vmax=1.5)
+    plt.colorbar(sc, ax=ax1, label="RMS (rad)")
+    ax1.axhline(0.9, color="red", ls="--", lw=0.8, label="RMS = 0.9")
+    ax1.set_xlabel("Temporal baseline (yr)")
+    ax1.set_ylabel("RMS (rad)")
+    ax1.set_title("Interferogram RMS vs temporal baseline")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # panel 2 — RMS per interferogram in original order
+    colors = ["tomato" if v > 0.9 else "steelblue" for v in rms]
+    ax2.bar(range(len(rms)), rms, color=colors, width=1.0, edgecolor="none")
+    ax2.axhline(0.9, color="red", ls="--", lw=0.8, label="RMS = 0.9")
+    ax2.set_xlabel("Interferogram index")
+    ax2.set_ylabel("RMS (rad)")
+    ax2.set_title(f"Interferogram RMS  —  {len(rms_ifg)} ifg  "
+                  f"({sum(1 for v in rms if v > 0.9)} > 0.9)")
+    ax2.legend()
+    ax2.grid(axis="y", alpha=0.3)
+
+    fig.tight_layout()
     _savefig(fig, save_dir, "check_rms_ifg_vs_bt.png")
     if display:
         plt.show()
@@ -489,53 +503,95 @@ def plot_rms_interfero(ts_dir, save_dir, display):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  9  Reconstructed variance vs measured variance
+#  9  Ramp residuals
+#
+#  list_ramp_sigma_estimated_ifg.txt — residual variance PER IFG after ramp
+#    estimation, before TS inversion. Cols: YYYYMMDD1 YYYYMMDD2 ... sigma
+#
+#  list_ramp_sigma_inverted_img.txt  — residual APS PER IMAGE after TS
+#    inversion (closure condition). Cols: decimal_date sigma YYYYMMDD
+#    These are different objects (one per ifg, one per image) and should
+#    look different.
+#
+#  list_ramp_ra_estimated_ifg.txt — IFGs that passed the unwrapping fraction
+#    threshold and had their range/azimuth ramps estimated. These are the IFGs
+#    that entered the TS inversion.
 # ─────────────────────────────────────────────────────────────────────────────
 def plot_variance_comparison(aux_dir, ts_dir, save_dir, display):
-    sigma_f = os.path.join(aux_dir, "list_ramp_sigma_estimated_ifg.txt")
-    ra_f    = os.path.join(aux_dir, "list_ramp_ra_estimated_ifg.txt")
-    if not (os.path.exists(sigma_f) and os.path.exists(ra_f)):
-        return
-
-    sig_rows = U.read_list_ramp_sigma(sigma_f)
-    sig_map  = {(r["date1"], r["date2"]): r["sigma"] for r in sig_rows}
-    ra_rows  = U.read_list_ramp_ra(ra_f)
+    sigma_ifg_f = os.path.join(aux_dir, "list_ramp_sigma_estimated_ifg.txt")
+    sigma_img_f = os.path.join(aux_dir, "list_ramp_sigma_inverted_img.txt")
+    ra_f        = os.path.join(aux_dir, "list_ramp_ra_estimated_ifg.txt")
 
     rms_ifg = U.read_rmsinterfero(os.path.join(ts_dir, "RMSinterfero.txt"))
     kept    = {(r["date1"], r["date2"]) for r in rms_ifg}
 
-    measured     = []
-    reconstructed = []
-    flagged      = []
-
-    for r in ra_rows:
-        key = (r["date1"], r["date2"])
-        if key in sig_map:
-            m   = sig_map[key]
-            # reconstructed variance: average of individual date variances
-            # (simplified: use sigma as proxy since we don't have the full list)
-            measured.append(m)
-            reconstructed.append(m)   # placeholder if list_ramp_ra doesn't have sigma col
-            flagged.append(key not in kept)
-
-    if not measured:
+    has_ifg = os.path.exists(sigma_ifg_f) and os.path.exists(ra_f)
+    has_img = os.path.exists(sigma_img_f)
+    if not has_ifg and not has_img:
+        print("  No ramp sigma files found, skipping.")
         return
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    colors = ["red" if f else "steelblue" for f in flagged]
-    ax.scatter(measured, reconstructed, c=colors, s=10, alpha=0.7)
-    lim = max(max(measured), max(reconstructed)) * 1.05
-    ax.plot([0, lim], [0, lim], "k--", lw=0.8, label="1:1")
-    ax.set_xlabel("Measured variance")
-    ax.set_ylabel("Reconstructed variance")
-    ax.set_title("Reconstructed vs measured interferogram variance\n(red = removed from TS)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ncols = (1 if has_ifg else 0) + (1 if has_img else 0)
+    fig, axes = plt.subplots(1, ncols, figsize=(7 * ncols, 5))
+    if ncols == 1:
+        axes = [axes]
+    ax_idx = 0
+
+    # panel A — per-IFG residual variance vs Bt (blue=kept, red=removed)
+    if has_ifg:
+        ax = axes[ax_idx]; ax_idx += 1
+        sig_rows = U.read_list_ramp_sigma(sigma_ifg_f)
+        ifg_rows = [r for r in sig_rows if "date1" in r]
+        sig_map  = {(r["date1"], r["date2"]): r["sigma"] for r in ifg_rows}
+        ra_rows  = U.read_list_ramp_ra(ra_f)
+
+        bt_all, sig_all, col_all = [], [], []
+        for r in ra_rows:
+            key = (r["date1"], r["date2"])
+            if key in sig_map:
+                bt_all.append(_bt_yr(r["date1"], r["date2"]))
+                sig_all.append(sig_map[key])
+                col_all.append("tomato" if key not in kept else "steelblue")
+
+        ax.scatter(bt_all, sig_all, c=col_all, s=12, alpha=0.8)
+        ax.set_xlabel("Temporal baseline (yr)")
+        ax.set_ylabel("Residual sigma (rad)")
+        ax.set_title("Per-IFG residual variance after ramp estimation\n"
+                     "(blue = kept in TS,  red = removed)")
+        from matplotlib.lines import Line2D
+        ax.legend(handles=[
+            Line2D([0],[0], marker='o', color='w', markerfacecolor='steelblue',
+                   markersize=7, label=f"kept ({col_all.count('steelblue')})"),
+            Line2D([0],[0], marker='o', color='w', markerfacecolor='tomato',
+                   markersize=7, label=f"removed ({col_all.count('tomato')})"),
+        ])
+        ax.grid(True, alpha=0.3)
+
+    # panel B — per-image APS after TS inversion vs time
+    if has_img:
+        ax = axes[ax_idx]; ax_idx += 1
+        img_rows = U.read_list_ramp_sigma(sigma_img_f)
+        img_rows = [r for r in img_rows if "yyyymmdd" in r]
+        if img_rows:
+            dates_img = [_dec(r["yyyymmdd"]) for r in img_rows]
+            sigma_img = [r["sigma"] for r in img_rows]
+            ax.plot(dates_img, sigma_img, "o-", color="steelblue",
+                    markersize=4, linewidth=0.8)
+            ax.set_xlabel("Date (decimal year)")
+            ax.set_ylabel("APS (rad)")
+            ax.set_title("Per-image APS after TS inversion\n"
+                         "(list_ramp_sigma_inverted_img)")
+            ax.grid(True, alpha=0.3)
+        else:
+            ax.set_title("list_ramp_sigma_inverted_img\n(no per-image rows found)")
+            ax.axis("off")
+
+    fig.suptitle("Ramp residuals — IFG variance  vs  image APS", fontsize=11)
+    fig.tight_layout()
     _savefig(fig, save_dir, "check_variance_comparison.png")
     if display:
         plt.show()
     plt.close(fig)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  10  Interferogram network
@@ -624,7 +680,7 @@ def _plot_network_ax(ax, ifg_list, bl_map):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  11  sigma_N.txt — per-image uncertainty from invers_temp.py
+#  11  APS_N.txt — per-image APS from invers_temp.py
 # ─────────────────────────────────────────────────────────────────────────────
 def _load_list_images(ts_dir):
     fpath = os.path.join(ts_dir, "list_images.txt")
@@ -640,13 +696,13 @@ def _load_list_images(ts_dir):
 
 
 def plot_sigma_vs_time(ts_dir, save_dir, display):
-    """Plot per-image uncertainty sigma_N.txt vs time (one curve per iteration)."""
+    """Plot per-image APS_N.txt vs time (one curve per iteration)."""
     sigma_files = sorted(
-        glob.glob(os.path.join(ts_dir, "sigma_*.txt")),
-        key=lambda p: int(os.path.basename(p).replace("sigma_","").replace(".txt",""))
+        glob.glob(os.path.join(ts_dir, "APS_*.txt")),
+        key=lambda p: int(os.path.basename(p).replace("APS_","").replace(".txt",""))
     )
     if not sigma_files:
-        print("  No sigma_N.txt files found, skipping.")
+        print("  No APS_N.txt files found, skipping.")
         return
     dates = _load_list_images(ts_dir)
     if not dates:
@@ -657,13 +713,13 @@ def plot_sigma_vs_time(ts_dir, save_dir, display):
     fig, ax = plt.subplots(figsize=(11, 4))
     for fpath, col in zip(sigma_files, colors):
         sigma = np.loadtxt(fpath)
-        niter = os.path.basename(fpath).replace("sigma_","").replace(".txt","")
+        niter = os.path.basename(fpath).replace("APS_","").replace(".txt","")
         n = min(len(dec_dates), len(sigma))
         ax.plot(dec_dates[:n], sigma[:n], "o-", color=col, markersize=4,
                 linewidth=0.8, label=f"iter {niter}")
     ax.set_xlabel("Date (decimal year)")
-    ax.set_ylabel("sigma (per-image uncertainty)")
-    ax.set_title("Per-image uncertainty vs time (invers_temp iterations)")
+    ax.set_ylabel("APS (rad)")
+    ax.set_title("Per-image APS vs time (invers_temp iterations)")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     _savefig(fig, save_dir, "check_sigma_vs_time.png")
@@ -798,61 +854,6 @@ def _read_tif(path):
         return None
 
 
-def _read_rmspixel(ts_dir, aux_dir=None):
-    """
-    Read RMSpixel map from TS/ or AUX/.
-    Accepts flat .r4 (dims from lect.in or .hdr) or GeoTIFF.
-    Returns float32 array or None.
-    """
-    try:
-        from osgeo import gdal as _gdal
-    except ImportError:
-        _gdal = None
-
-    candidates = [
-        os.path.join(ts_dir, 'RMSpixel'),
-        os.path.join(ts_dir, 'RMSpixel.tif'),
-    ]
-    if aux_dir:
-        candidates += [
-            os.path.join(aux_dir, 'RMSpixel'),
-            os.path.join(aux_dir, 'RMSpixel.tif'),
-        ]
-
-    for p in candidates:
-        if not os.path.exists(p):
-            continue
-        if p.endswith('.tif') and _gdal:
-            try:
-                ds  = _gdal.Open(p)
-                arr = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
-                del ds
-                arr[arr == 0] = np.nan
-                return arr
-            except Exception:
-                pass
-        else:
-            # flat r4 — try .hdr first, then lect.in
-            hdr = p + '.hdr'
-            dims = None
-            if os.path.exists(hdr):
-                try:
-                    info = U.read_envi_hdr(hdr)
-                    dims = (info['ncol'], info['nlign'])
-                except Exception:
-                    pass
-            if dims is None:
-                dims = _get_dims(ts_dir)
-            if dims:
-                ncol, nlign = dims
-                data = np.fromfile(p, dtype=np.float32)
-                if data.size == nlign * ncol:
-                    arr = data.reshape(nlign, ncol)
-                    arr[arr == 0] = np.nan
-                    return arr
-    return None
-
-
 def _imshow_map(ax, arr, cmap, title, unit, pct=95):
     """Plot a 2-D map with symmetric colour scale and colorbar."""
     finite = arr[np.isfinite(arr)]
@@ -869,52 +870,51 @@ def _imshow_map(ax, arr, cmap, title, unit, pct=95):
     ax.axis("off")
 
 
-def plot_velocity_maps(ts_dir, save_dir, display, aux_dir=None):
+def plot_velocity_maps(ts_dir, save_dir, display):
     """
-    Figure 1 — Velocity + RMSpixel
-        CNES_MV-LOS_geo_*.tiff  — FLATSIM product (if present)
-        lin_coeff.tif            — invers_temp output (if present)
-        RMSpixel                 — pixel quality map (if present)
+    Figure 1 — Velocity comparison
+        Left  : CNES_MV-LOS_geo_*.tiff  (FLATSIM product)
+        Right : lin_coeff.tif / lin_coeff.r4  (invers_temp output, if present)
 
     Figure 2 — Seasonal model (if invers_temp outputs exist)
-        ampwt_coeff  — seasonal amplitude
-        phiwt_coeff  — seasonal phase
-        cos_coeff    — cosine term
-        sin_coeff    — sine term
+        ampwt_coeff.tif  — amplitude
+        phiwt_coeff.tif  — phase
+        cos_coeff.tif    — cosine term
+        sin_coeff.tif    — sine term
     """
-    # ── collect available maps ───────────────────────────────────────────────
-    mv_path    = next(iter(sorted(glob.glob(
-                     os.path.join(ts_dir, "CNES_MV-LOS_geo_*.tiff")))), None)
-    mv_arr     = _read_tif(mv_path) if mv_path else None
-    lin_arr, _ = _read_coeff_map(ts_dir, "lin")
-    rms_arr    = _read_rmspixel(ts_dir, aux_dir)
+    # ── Velocity maps ────────────────────────────────────────────────────────
+    mv_path = next(iter(sorted(glob.glob(
+        os.path.join(ts_dir, "CNES_MV-LOS_geo_*.tiff")))), None)
+    lin_arr, lin_src = _read_coeff_map(ts_dir, "lin")
+
+    mv_arr = _read_tif(mv_path) if mv_path else None
+
+    if mv_arr is None and lin_arr is None:
+        print("  No velocity maps found, skipping.")
+        return
 
     panels = []
     if mv_arr is not None:
-        panels.append((mv_arr,
-                       "FLATSIM velocity\n(CNES_MV-LOS)", "RdBu_r", "mm/yr"))
+        panels.append((mv_arr, "FLATSIM velocity\n(CNES_MV-LOS)", "RdBu_r", "mm/yr"))
     if lin_arr is not None:
-        panels.append((np.where(lin_arr == 0, np.nan, lin_arr),
-                       "Iterated velocity\n(lin_coeff)",  "RdBu_r", "rad/yr"))
-    if rms_arr is not None:
-        panels.append((rms_arr,
-                       "RMSpixel\n(pixel quality)",       "hot_r",  "rms"))
-
-    if not panels:
-        print("  No velocity / RMSpixel maps found, skipping.")
-        return
+        lin_masked = np.where(lin_arr == 0, np.nan, lin_arr)
+        panels.append((lin_masked, "Iterated velocity\n(lin_coeff)", "RdBu_r", "rad/yr"))
 
     fig, axes = plt.subplots(1, len(panels), figsize=(6 * len(panels), 5))
     if len(panels) == 1:
         axes = [axes]
     for ax, (arr, title, cmap, unit) in zip(axes, panels):
-        _imshow_map(ax, arr, cmap, title, unit,
-                    pct=98 if cmap == "hot_r" else 95)
+        _imshow_map(ax, arr, cmap, title, unit)
 
+    # difference panel if both exist
     if mv_arr is not None and lin_arr is not None:
-        fig.suptitle("Velocity — FLATSIM product vs invers_temp", fontsize=11)
+        lin_masked = np.where(lin_arr == 0, np.nan, lin_arr)
+        # normalise lin to same scale as mv (approximate: both in rad or mm)
+        # just show side by side — user can judge the scaling
+        fig.suptitle("Velocity maps — FLATSIM product vs iterated inversion",
+                     fontsize=11)
     else:
-        fig.suptitle("Velocity / quality maps", fontsize=11)
+        fig.suptitle("Velocity map", fontsize=11)
 
     fig.tight_layout()
     _savefig(fig, save_dir, "check_velocity_maps.png")
@@ -924,22 +924,21 @@ def plot_velocity_maps(ts_dir, save_dir, display, aux_dir=None):
 
     # ── Seasonal maps ────────────────────────────────────────────────────────
     seas_cfg = [
-        ("ampwt", "Seasonal amplitude", "viridis", "amplitude"),
-        ("phiwt", "Seasonal phase",     "hsv",     "phase (rad)"),
-        ("cos",   "Cosine term",        "RdBu_r",  "rad"),
-        ("sin",   "Sine term",          "RdBu_r",  "rad"),
+        ("ampwt", "Seasonal amplitude", "viridis",  "amplitude"),
+        ("phiwt", "Seasonal phase",     "hsv",       "phase (rad)"),
+        ("cos",   "Cosine term",        "RdBu_r",    "rad"),
+        ("sin",   "Sine term",          "RdBu_r",    "rad"),
     ]
     seas_avail = []
     for name, title, cmap, unit in seas_cfg:
-        arr, _ = _read_coeff_map(ts_dir, name)
+        arr, src = _read_coeff_map(ts_dir, name)
         if arr is not None:
             seas_avail.append((np.where(arr == 0, np.nan, arr), title, cmap, unit))
 
     if not seas_avail:
         return
 
-    fig2, axes2 = plt.subplots(1, len(seas_avail),
-                                figsize=(6 * len(seas_avail), 5))
+    fig2, axes2 = plt.subplots(1, len(seas_avail), figsize=(6 * len(seas_avail), 5))
     if len(seas_avail) == 1:
         axes2 = [axes2]
     for ax, (arr, title, cmap, unit) in zip(axes2, seas_avail):
@@ -957,6 +956,29 @@ def plot_velocity_maps(ts_dir, save_dir, display, aux_dir=None):
 # ─────────────────────────────────────────────────────────────────────────────
 #  Burst images (display PNG images from AUX dir)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Burst time-latitude images
+# ─────────────────────────────────────────────────────────────────────────────
+def plot_burst_images(aux_dir, save_dir, display):
+    """Display plot_time_lat_iw*.png — one separate figure per subswath."""
+    matches = sorted(glob.glob(os.path.join(aux_dir, "plot_time_lat_iw*.png")))
+    if not matches:
+        print("  plot_time_lat_iw*.png not found, skipping.")
+        return
+    for fpath in matches:
+        stem = os.path.basename(fpath).replace(".png", "")
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.imshow(plt.imread(fpath))
+        ax.axis("off")
+        fig.suptitle(stem, fontsize=10)
+        fig.tight_layout()
+        _savefig(fig, save_dir, f"check_{stem}.png")
+        if display:
+            plt.show()
+        plt.close(fig)
+
+
 def display_aux_images(aux_dir, save_dir, display):
     patterns = [
         ("plot_time_lat_iw*.png",           "Burst time-latitude distribution"),
@@ -1221,42 +1243,45 @@ Examples
         return
 
     # ── Run all checks ──────────────────────────────────────────────────────
-    print("\n[1/12] SD time-series plots …")
+    print("\n[1/13] Burst time-latitude images …")
+    plot_burst_images(aux_dir, save_dir, display)
+
+    print("\n[2/13] SD time-series plots …")
     plot_sd_group(aux_dir, save_dir, display)
 
-    print("[2/12] IW merge plots …")
+    print("[3/13] IW merge plots …")
     plot_iw_merge(aux_dir, save_dir, display)
 
-    print("[3/12] Interferogram statistics …")
+    print("[4/13] Interferogram statistics …")
     stats = compute_ifg_stats(ts_dir, aux_dir)
     print_stats(stats)
 
-    print("[4/12] Bt histogram …")
+    print("[5/13] Bt histogram …")
     plot_bt_histogram(stats, save_dir, display)
 
-    print("[5/12] Unwrapping fraction vs Bt / season …")
+    print("[6/13] Unwrapping fraction vs Bt / season …")
     plot_unw_frac_vs_bt(stats, save_dir, display)
 
-    print("[6/12] RMS per date …")
+    print("[7/13] RMS per date …")
     plot_rms_date(ts_dir, save_dir, display)
 
-    print("[7/12] RMS per interferogram …")
+    print("[8/13] RMS per interferogram …")
     plot_rms_interfero(ts_dir, save_dir, display)
 
-    print("[8/12] Variance comparison …")
+    print("[9/13] Variance comparison …")
     plot_variance_comparison(aux_dir, ts_dir, save_dir, display)
 
-    print("[9/12] Interferogram network …")
+    print("[10/13] Interferogram network …")
     plot_ifg_network(ts_dir, aux_dir, save_dir, display)
 
-    print("[10/13] Per-image uncertainty (sigma_N.txt) …")
+    print("[11/13] Per-image APS (APS_N.txt) …")
     plot_sigma_vs_time(ts_dir, save_dir, display)
 
-    print("[11/13] Coefficient maps (lin, ampwt, phiwt) …")
+    print("[12/13] Coefficient maps (lin, ampwt, phiwt) …")
     plot_coeff_maps(ts_dir, save_dir, display)
 
-    print("[12/13] Velocity and seasonal maps …")
-    plot_velocity_maps(ts_dir, save_dir, display, aux_dir=aux_dir)
+    print("[13/13] Velocity and seasonal maps …")
+    plot_velocity_maps(ts_dir, save_dir, display)
 
     # print("[13/13] AUX PNG images …")
     # display_aux_images(aux_dir, save_dir, display)

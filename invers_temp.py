@@ -21,14 +21,15 @@ Arguments
     track_dir              Track dir (with TS/ subdir) or TS directory directly
     --cube=<path>          GeoTIFF or ENVI cube  [default: auto-detect]
     --list_images=<path>   list_images.txt        [default: auto-detect]
-    --rms=<path>           inrms.txt              [default: auto-detect]
-    --aps=<path>           inaps.txt              [default: auto-detect]
+    --rms=<path>           inrms.txt  [default: auto-detect; "none" to disable]
+    --aps=<path>           inaps.txt  [default: auto-detect; "none" to disable]
     --niter=<n>            Number of iterations   [default: 2]
     --linear=<yes/no>      Linear velocity term   [default: yes]
     --seasonal=<yes/no>    Annual cos+sin terms   [default: yes]
     --semianual=<yes/no>   Semi-annual terms      [default: no]
     --bianual=<yes/no>     Bi-annual terms        [default: no]
     --steps=<t1,t2,...>    Heaviside step times   [default: None]
+    --cond=<value>         SVD condition number   [default: 1e-5]
     --imref=<n>            Reference image (1-based) [default: 1]
     --dateslim=<dmin,dmax> Date limits e.g. 20141013,20220528 [default: all]
     --nproc=<n>            Number of CPU cores    [default: 4]
@@ -170,7 +171,7 @@ def save_tif(arr, name, ts_dir, driver, gt, proj):
     logger.info(f'Saved: {outname}')
 
 
-def _wls(A, b, w):
+def _wls(A, b, w, cond=1e-5):
     """
     Weighted least-squares:  min ||W(Ax - b)||²
     w : 1-D weight array (not variances — weights applied directly).
@@ -178,7 +179,7 @@ def _wls(A, b, w):
     """
     Aw = A * w[:, np.newaxis]
     bw = b * w
-    fsoln = np.linalg.lstsq(Aw, bw, rcond=1e-5)[0]
+    fsoln = np.linalg.lstsq(Aw, bw, rcond=cond)[0]
     try:
         varx   = np.linalg.pinv(A.T @ A)
         res2   = np.sum((b - A @ fsoln) ** 2)
@@ -195,10 +196,10 @@ def _wls(A, b, w):
 
 _G = {}   # global state shared across workers in the same process
 
-def _init_workers(N_, M_, dates_, basis_, Mbasis_, cte_coh_):
+def _init_workers(N_, M_, dates_, basis_, Mbasis_, cond_, cte_coh_):
     global _G
     _G = dict(N=N_, M=M_, dates=dates_, basis=basis_, Mbasis=Mbasis_,
-              cte_coh=cte_coh_)
+              cond=cond_, cte_coh=cte_coh_)
 
 
 def _temporal_decomp(disp, sigma):
@@ -212,7 +213,7 @@ def _temporal_decomp(disp, sigma):
     """
     N, M, dates   = _G['N'], _G['M'], _G['dates']
     basis, Mbasis = _G['basis'], _G['Mbasis']
-    cte_coh = _G['cte_coh']
+    cond, cte_coh = _G['cond'], _G['cte_coh']
 
     k  = np.flatnonzero(~np.isnan(disp))
     kk = len(k)
@@ -236,7 +237,7 @@ def _temporal_decomp(disp, sigma):
 
     for inner_iter in range(3):   # iter 0 = init, iter 1-2 = IRLS (as in Fortran)
         w_total = sig_k * pix_w
-        bb, sigmam_tmp = _wls(G, taby, w_total)
+        bb, sigmam_tmp = _wls(G, taby, w_total, cond=cond)
 
         if inner_iter < 2:
             # compute weighted residuals → update pixel weights
@@ -301,14 +302,15 @@ def main():
                         help="Track directory (with TS/ subdir) or TS directory")
     parser.add_argument("--cube",        default=None,  help="Cube path (auto-detected)")
     parser.add_argument("--list_images", default=None,  help="list_images.txt path")
-    parser.add_argument("--rms",         default=None,  help="inrms.txt path")
-    parser.add_argument("--aps",         default=None,  help="inaps.txt path")
+    parser.add_argument("--rms", default=None, help="inrms.txt path; pass none to use unit weights")
+    parser.add_argument("--aps", default=None, help="inaps.txt path; pass none to use unit weights")
     parser.add_argument("--niter",       type=int,   default=2,    help="Iterations [2]")
     parser.add_argument("--linear",      default='yes', help="Linear term [yes]")
     parser.add_argument("--seasonal",    default='yes', help="Annual seasonal [yes]")
     parser.add_argument("--semianual",   default='no',  help="Semi-annual [no]")
     parser.add_argument("--bianual",     default='no',  help="Bi-annual [no]")
     parser.add_argument("--steps",       default=None,  help="Step times e.g. 2010.5,2015.2")
+    parser.add_argument("--cond",        type=float, default=1e-5, help="SVD cond [1e-5]")
     parser.add_argument("--cte_coh",     type=float, default=0.5,
                         help="IRLS damping constant — weight = 1/(cte_coh + |res|/rms). "
                              "0.5 is recommended (same as Fortran). [default: 0.5]")
@@ -328,8 +330,10 @@ def main():
                                            'depl_cumule')
     list_path = args.list_images or _find(ts_dir, 'list_images.txt',
                                                    'images_retenues')
-    rms_path  = args.rms or _find(ts_dir, 'inrms.txt')
-    aps_path  = args.aps or _find(ts_dir, 'inaps.txt')
+    rms_path = None if (args.rms and args.rms.lower() == 'none') \
+               else (args.rms or _find(ts_dir, 'inrms.txt'))
+    aps_path = None if (args.aps and args.aps.lower() == 'none') \
+               else (args.aps or _find(ts_dir, 'inaps.txt'))
 
     for p, lbl in [(cube_path, 'cube'), (list_path, 'list_images')]:
         if not p or not os.path.exists(p):
@@ -338,8 +342,8 @@ def main():
 
     logger.info(f'Cube        : {cube_path}')
     logger.info(f'List images : {list_path}')
-    logger.info(f'RMS         : {rms_path}')
-    logger.info(f'APS         : {aps_path}')
+    logger.info(f'RMS weights : {rms_path or "DISABLED (unit weights)"}')
+    logger.info(f'APS weights : {aps_path or "DISABLED (unit weights)"}')
 
     # ── GeoTIFF projection (from cube if tiff, else from first tiff found) ──
     geotiff_ref = cube_path if cube_path.endswith(('.tif', '.tiff')) \
@@ -455,8 +459,9 @@ def main():
                 w = np.loadtxt(path, comments='#', dtype='f')
             w = w[indexd] if len(w) > N else w[:N]
             w += std_maps
-            logger.info(f'{label}: {w}')
+            logger.info(f'{label} weights loaded: min={w.min():.3f} max={w.max():.3f}')
             return w
+        logger.info(f'{label} weights: DISABLED — unit weights')
         return np.ones(N, dtype=np.float32)
 
     in_aps   = _load_weights(aps_path, 'APS')
@@ -490,7 +495,7 @@ def main():
         with multiprocessing.Pool(
             processes=nproc,
             initializer=_init_workers,
-            initargs=(N, M, dates, basis, Mbasis, args.cte_coh),
+            initargs=(N, M, dates, basis, Mbasis, args.cond, args.cte_coh),
         ) as pool:
             for line in range(0, new_lines, block_size):
                 end_line = min(line + block_size, new_lines)

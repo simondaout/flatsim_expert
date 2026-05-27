@@ -21,7 +21,7 @@ Replaces `flatsim2mp.sh`, `check_results.sh`, `check_results_inc.sh`
 
 ```bash
 pip install numpy scipy matplotlib gdal
-pip install mplcursors   # optional: date tooltip on scatter plots
+pip install mplcursors   # optional: click-to-show date tooltip on scatter plots
 ```
 
 ---
@@ -57,24 +57,34 @@ Runs Step 0 only and exits. It:
 ### Step 2 — Run the temporal inversion
 
 ```bash
+# First pass — no weights, to identify dates with strong APS
+python invers_temp.py data/Tienshan/D107_NORD --rms=none --aps=none
+
+# Second pass — with weights (auto-detected from TS/)
 python invers_temp.py data/Tienshan/D107_NORD
 ```
 
 Outputs written into `TS/`:
-`lin_coeff.tif`, `ampwt_coeff.tif`, `phiwt_coeff.tif`, `sigma_N.txt`, `inversion.eps`, …
+`lin_coeff.tif`, `ampwt_coeff.tif`, `phiwt_coeff.tif`, `APS_N.txt`, `inversion.eps`, …
 
 Key options:
 ```
---niter=2          number of outer iterations  [default: 2]
---linear=yes       linear velocity term        [default: yes]
---seasonal=yes     annual cos+sin terms        [default: yes]
---semianual=no     semi-annual terms           [default: no]
---bianual=no       bi-annual terms             [default: no]
---steps=2010.5     heaviside steps             [default: none]
---cte_coh=0.5      IRLS damping (robust WLS)  [default: 0.5]
---rmsl=10.0        RMSpixel threshold          [default: 10.0]
---nproc=4          CPU cores                  [default: 4]
+--niter=2          number of outer iterations         [default: 2]
+--linear=yes       linear velocity term               [default: yes]
+--seasonal=yes     annual cos+sin terms               [default: yes]
+--semianual=no     semi-annual terms                  [default: no]
+--bianual=no       bi-annual terms                    [default: no]
+--steps=2010.5     heaviside steps                    [default: none]
+--cte_coh=0.5      IRLS damping (robust WLS)          [default: 0.5]
+--rmsl=10.0        RMSpixel masking threshold         [default: 10.0]
+--nproc=4          CPU cores                          [default: 4]
+--rms=none         disable per-image RMS weighting    [default: auto-detect]
+--aps=none         disable per-image APS weighting    [default: auto-detect]
 ```
+
+By default `--rms` and `--aps` are auto-detected from `TS/inrms.txt` and
+`TS/inaps.txt`. If those files are absent, unit weights are used automatically.
+Pass `none` explicitly to force unit weights even when the files exist.
 
 ### Step 3 — Full validation (prepare + all plots)
 
@@ -95,27 +105,28 @@ python check_results_inc.py \
 
 ## Output figures — `check_results.py`
 
-| Figure | Content |
-|--------|---------|
-| `check_sd_sx.png` | SD variation along range (IW1/2/3, click → date) |
-| `check_sd_sy.png` | SD variation along azimuth |
-| `check_sd_qy.png` | Quadratic SD along azimuth |
-| `check_sd_syy.png` | SD tôle ondulée |
-| `check_sd_sigma.png` | SD sigma |
-| `check_sd_cst.png` | SD constant term |
-| `check_iw_merge.png` | Phase jumps IW1-IW2 and IW2-IW3 |
-| `check_histo_bt.png` | Histogram of kept ifg by Bt (ascending) |
-| `check_unw_frac_vs_bt.png` | Unwrapping fraction vs Bt |
-| `check_unw_frac_vs_season.png` | Unwrapping fraction vs season (1-yr ifg) |
-| `check_rms_date.png` | Per-date RMS |
-| `check_rms_ifg_vs_bt.png` | Ifg RMS vs Bt (colour-coded scatter) |
-| `check_variance_comparison.png` | Reconstructed vs measured variance (blue=kept, red=removed) |
-| `check_ifg_network.png` | Interferogram network (blue=kept, red=removed) |
-| `check_sigma_vs_time.png` | Per-image σ vs time (one curve per iteration) |
-| `check_coeff_maps.png` | lin_coeff, ampwt_coeff, phiwt_coeff, ref_coeff |
-| `check_velocity_maps.png` | FLATSIM MV-LOS vs lin_coeff vs RMSpixel |
-| `check_seasonal_maps.png` | Seasonal maps: amplitude, phase, cos, sin |
-| `check_img_*.png` | AUX PNG images (burst maps, SD summaries, …) |
+| Step | Figure | Content |
+|------|--------|---------|
+| 1 | `check_img_plot_time_lat_iwiw.png` | Burst time-latitude distribution |
+| 2 | `check_sd_sx.png` | SD variation along range (IW1/2/3, click → date) |
+| 2 | `check_sd_sy.png` | SD variation along azimuth |
+| 2 | `check_sd_qy.png` | Quadratic SD along azimuth |
+| 2 | `check_sd_syy.png` | SD tôle ondulée |
+| 2 | `check_sd_sigma.png` | SD sigma |
+| 2 | `check_sd_cst.png` | SD constant term |
+| 3 | `check_iw_merge.png` | Phase jumps IW1-IW2 and IW2-IW3 |
+| 4 | *(console)* | Interferogram statistics summary |
+| 5 | `check_histo_bt.png` | Histogram of kept ifg by Bt (ascending) |
+| 6 | `check_unw_frac_vs_bt.png` | Unwrapping fraction vs Bt |
+| 6 | `check_unw_frac_vs_season.png` | Unwrapping fraction vs season (1-yr ifg) |
+| 7 | `check_rms_date.png` | Per-date RMS |
+| 8 | `check_rms_ifg_vs_bt.png` | Ifg RMS vs Bt + ifg RMS in original order |
+| 9 | `check_variance_comparison.png` | Per-IFG variance (blue=kept, red=removed) + per-image APS |
+| 10 | `check_ifg_network.png` | Interferogram network (blue=kept, red=removed) |
+| 11 | `check_sigma_vs_time.png` | Per-image APS vs time (one curve per iteration) |
+| 12 | `check_coeff_maps.png` | lin_coeff, ampwt_coeff, phiwt_coeff, ref_coeff |
+| 13 | `check_velocity_maps.png` | FLATSIM MV-LOS vs lin_coeff vs RMSpixel |
+| 13 | `check_seasonal_maps.png` | Seasonal maps: amplitude, phase, cos, sin |
 
 ## Output figures — `check_results_inc.py`
 
@@ -127,13 +138,15 @@ Same plots overlaid new (blue) vs previous (red), prefixed with `inc_`.
 
 ```
 check_results.py      <track_dir>  [--aux DIR] [--save DIR] [--no-display] [--prepare]
-check_results_inc.py  <new_track>  <prev_track> [--aux DIR] [--prev-aux DIR] [--save DIR] [--no-display]
-invers_temp.py        <track_dir>  [--niter N] [--linear yes/no] [--seasonal yes/no]
-                                   [--semianual yes/no] [--bianual yes/no]
-                                   [--steps t1,t2] [--cte_coh 0.5] [--rmsl 10.0]
-                                   [--nproc N] [--cube PATH] [--list_images PATH]
-                                   [--rms PATH] [--aps PATH] [--dateslim dmin,dmax]
-                                   [--imref N] [--plot yes/no]
+check_results_inc.py  <new_track>  <prev_track>
+                      [--aux DIR] [--prev-aux DIR] [--save DIR] [--no-display]
+invers_temp.py        <track_dir>
+                      [--niter N] [--linear yes/no] [--seasonal yes/no]
+                      [--semianual yes/no] [--bianual yes/no] [--steps t1,t2]
+                      [--cte_coh 0.5] [--rmsl 10.0] [--nproc N]
+                      [--rms PATH|none] [--aps PATH|none]
+                      [--cube PATH] [--list_images PATH]
+                      [--dateslim dmin,dmax] [--imref N] [--plot yes/no]
 ```
 
 Both `check_results.py` and `invers_temp.py` accept either the **track directory**
