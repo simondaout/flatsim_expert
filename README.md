@@ -4,8 +4,7 @@ Python scripts for validation and temporal inversion of FLATSIM Sentinel-1
 time series products.
 
 Replaces `flatsim2mp.sh`, `check_results.sh`, `check_results_inc.sh`
-(MP Doin / ISTerre) and provides a simplified alternative to
-`invers_disp2coef.py` (Simon Daout / ISTerre).
+(MP Doin / ISTerre).
 
 ## Files
 
@@ -21,7 +20,7 @@ Replaces `flatsim2mp.sh`, `check_results.sh`, `check_results_inc.sh`
 ## Dependencies
 
 ```bash
-pip install numpy scipy matplotlib rasterio gdal
+pip install numpy scipy matplotlib gdal
 pip install mplcursors   # optional: date tooltip on scatter plots
 ```
 
@@ -73,6 +72,7 @@ Key options:
 --bianual=no       bi-annual terms             [default: no]
 --steps=2010.5     heaviside steps             [default: none]
 --cte_coh=0.5      IRLS damping (robust WLS)  [default: 0.5]
+--rmsl=10.0        RMSpixel threshold          [default: 10.0]
 --nproc=4          CPU cores                  [default: 4]
 ```
 
@@ -113,11 +113,28 @@ python check_results_inc.py \
 | `check_ifg_network.png` | Interferogram network (blue=kept, red=removed) |
 | `check_sigma_vs_time.png` | Per-image σ vs time (one curve per iteration) |
 | `check_coeff_maps.png` | lin_coeff, ampwt_coeff, phiwt_coeff, ref_coeff |
-| `check_velocity_maps.png` | FLATSIM MV-LOS vs iterated lin_coeff (side by side) |
-| `check_seasonal_maps.png` | Seasonal maps: amplitude, phase, cos, sin (if present) |
+| `check_velocity_maps.png` | FLATSIM MV-LOS vs lin_coeff vs RMSpixel |
+| `check_seasonal_maps.png` | Seasonal maps: amplitude, phase, cos, sin |
 | `check_img_*.png` | AUX PNG images (burst maps, SD summaries, …) |
 
 ## Output figures — `check_results_inc.py`
 
-WIP
+Same plots overlaid new (blue) vs previous (red), prefixed with `inc_`.
+
 ---
+
+## CLI reference
+
+```
+check_results.py      <track_dir>  [--aux DIR] [--save DIR] [--no-display] [--prepare]
+check_results_inc.py  <new_track>  <prev_track> [--aux DIR] [--prev-aux DIR] [--save DIR] [--no-display]
+invers_temp.py        <track_dir>  [--niter N] [--linear yes/no] [--seasonal yes/no]
+                                   [--semianual yes/no] [--bianual yes/no]
+                                   [--steps t1,t2] [--cte_coh 0.5] [--rmsl 10.0]
+                                   [--nproc N] [--cube PATH] [--list_images PATH]
+                                   [--rms PATH] [--aps PATH] [--dateslim dmin,dmax]
+                                   [--imref N] [--plot yes/no]
+```
+
+Both `check_results.py` and `invers_temp.py` accept either the **track directory**
+(containing `TS/` and `AUX/`) or the **TS directory** directly.

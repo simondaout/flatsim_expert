@@ -798,6 +798,61 @@ def _read_tif(path):
         return None
 
 
+def _read_rmspixel(ts_dir, aux_dir=None):
+    """
+    Read RMSpixel map from TS/ or AUX/.
+    Accepts flat .r4 (dims from lect.in or .hdr) or GeoTIFF.
+    Returns float32 array or None.
+    """
+    try:
+        from osgeo import gdal as _gdal
+    except ImportError:
+        _gdal = None
+
+    candidates = [
+        os.path.join(ts_dir, 'RMSpixel'),
+        os.path.join(ts_dir, 'RMSpixel.tif'),
+    ]
+    if aux_dir:
+        candidates += [
+            os.path.join(aux_dir, 'RMSpixel'),
+            os.path.join(aux_dir, 'RMSpixel.tif'),
+        ]
+
+    for p in candidates:
+        if not os.path.exists(p):
+            continue
+        if p.endswith('.tif') and _gdal:
+            try:
+                ds  = _gdal.Open(p)
+                arr = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                del ds
+                arr[arr == 0] = np.nan
+                return arr
+            except Exception:
+                pass
+        else:
+            # flat r4 — try .hdr first, then lect.in
+            hdr = p + '.hdr'
+            dims = None
+            if os.path.exists(hdr):
+                try:
+                    info = U.read_envi_hdr(hdr)
+                    dims = (info['ncol'], info['nlign'])
+                except Exception:
+                    pass
+            if dims is None:
+                dims = _get_dims(ts_dir)
+            if dims:
+                ncol, nlign = dims
+                data = np.fromfile(p, dtype=np.float32)
+                if data.size == nlign * ncol:
+                    arr = data.reshape(nlign, ncol)
+                    arr[arr == 0] = np.nan
+                    return arr
+    return None
+
+
 def _imshow_map(ax, arr, cmap, title, unit, pct=95):
     """Plot a 2-D map with symmetric colour scale and colorbar."""
     finite = arr[np.isfinite(arr)]
@@ -814,51 +869,52 @@ def _imshow_map(ax, arr, cmap, title, unit, pct=95):
     ax.axis("off")
 
 
-def plot_velocity_maps(ts_dir, save_dir, display):
+def plot_velocity_maps(ts_dir, save_dir, display, aux_dir=None):
     """
-    Figure 1 — Velocity comparison
-        Left  : CNES_MV-LOS_geo_*.tiff  (FLATSIM product)
-        Right : lin_coeff.tif / lin_coeff.r4  (invers_temp output, if present)
+    Figure 1 — Velocity + RMSpixel
+        CNES_MV-LOS_geo_*.tiff  — FLATSIM product (if present)
+        lin_coeff.tif            — invers_temp output (if present)
+        RMSpixel                 — pixel quality map (if present)
 
     Figure 2 — Seasonal model (if invers_temp outputs exist)
-        ampwt_coeff.tif  — amplitude
-        phiwt_coeff.tif  — phase
-        cos_coeff.tif    — cosine term
-        sin_coeff.tif    — sine term
+        ampwt_coeff  — seasonal amplitude
+        phiwt_coeff  — seasonal phase
+        cos_coeff    — cosine term
+        sin_coeff    — sine term
     """
-    # ── Velocity maps ────────────────────────────────────────────────────────
-    mv_path = next(iter(sorted(glob.glob(
-        os.path.join(ts_dir, "CNES_MV-LOS_geo_*.tiff")))), None)
-    lin_arr, lin_src = _read_coeff_map(ts_dir, "lin")
-
-    mv_arr = _read_tif(mv_path) if mv_path else None
-
-    if mv_arr is None and lin_arr is None:
-        print("  No velocity maps found, skipping.")
-        return
+    # ── collect available maps ───────────────────────────────────────────────
+    mv_path    = next(iter(sorted(glob.glob(
+                     os.path.join(ts_dir, "CNES_MV-LOS_geo_*.tiff")))), None)
+    mv_arr     = _read_tif(mv_path) if mv_path else None
+    lin_arr, _ = _read_coeff_map(ts_dir, "lin")
+    rms_arr    = _read_rmspixel(ts_dir, aux_dir)
 
     panels = []
     if mv_arr is not None:
-        panels.append((mv_arr, "FLATSIM velocity\n(CNES_MV-LOS)", "RdBu_r", "mm/yr"))
+        panels.append((mv_arr,
+                       "FLATSIM velocity\n(CNES_MV-LOS)", "RdBu_r", "mm/yr"))
     if lin_arr is not None:
-        lin_masked = np.where(lin_arr == 0, np.nan, lin_arr)
-        panels.append((lin_masked, "Iterated velocity\n(lin_coeff)", "RdBu_r", "rad/yr"))
+        panels.append((np.where(lin_arr == 0, np.nan, lin_arr),
+                       "Iterated velocity\n(lin_coeff)",  "RdBu_r", "rad/yr"))
+    if rms_arr is not None:
+        panels.append((rms_arr,
+                       "RMSpixel\n(pixel quality)",       "hot_r",  "rms"))
+
+    if not panels:
+        print("  No velocity / RMSpixel maps found, skipping.")
+        return
 
     fig, axes = plt.subplots(1, len(panels), figsize=(6 * len(panels), 5))
     if len(panels) == 1:
         axes = [axes]
     for ax, (arr, title, cmap, unit) in zip(axes, panels):
-        _imshow_map(ax, arr, cmap, title, unit)
+        _imshow_map(ax, arr, cmap, title, unit,
+                    pct=98 if cmap == "hot_r" else 95)
 
-    # difference panel if both exist
     if mv_arr is not None and lin_arr is not None:
-        lin_masked = np.where(lin_arr == 0, np.nan, lin_arr)
-        # normalise lin to same scale as mv (approximate: both in rad or mm)
-        # just show side by side — user can judge the scaling
-        fig.suptitle("Velocity maps — FLATSIM product vs iterated inversion",
-                     fontsize=11)
+        fig.suptitle("Velocity — FLATSIM product vs invers_temp", fontsize=11)
     else:
-        fig.suptitle("Velocity map", fontsize=11)
+        fig.suptitle("Velocity / quality maps", fontsize=11)
 
     fig.tight_layout()
     _savefig(fig, save_dir, "check_velocity_maps.png")
@@ -868,21 +924,22 @@ def plot_velocity_maps(ts_dir, save_dir, display):
 
     # ── Seasonal maps ────────────────────────────────────────────────────────
     seas_cfg = [
-        ("ampwt", "Seasonal amplitude", "viridis",  "amplitude"),
-        ("phiwt", "Seasonal phase",     "hsv",       "phase (rad)"),
-        ("cos",   "Cosine term",        "RdBu_r",    "rad"),
-        ("sin",   "Sine term",          "RdBu_r",    "rad"),
+        ("ampwt", "Seasonal amplitude", "viridis", "amplitude"),
+        ("phiwt", "Seasonal phase",     "hsv",     "phase (rad)"),
+        ("cos",   "Cosine term",        "RdBu_r",  "rad"),
+        ("sin",   "Sine term",          "RdBu_r",  "rad"),
     ]
     seas_avail = []
     for name, title, cmap, unit in seas_cfg:
-        arr, src = _read_coeff_map(ts_dir, name)
+        arr, _ = _read_coeff_map(ts_dir, name)
         if arr is not None:
             seas_avail.append((np.where(arr == 0, np.nan, arr), title, cmap, unit))
 
     if not seas_avail:
         return
 
-    fig2, axes2 = plt.subplots(1, len(seas_avail), figsize=(6 * len(seas_avail), 5))
+    fig2, axes2 = plt.subplots(1, len(seas_avail),
+                                figsize=(6 * len(seas_avail), 5))
     if len(seas_avail) == 1:
         axes2 = [axes2]
     for ax, (arr, title, cmap, unit) in zip(axes2, seas_avail):
@@ -1199,7 +1256,7 @@ Examples
     plot_coeff_maps(ts_dir, save_dir, display)
 
     print("[12/13] Velocity and seasonal maps …")
-    plot_velocity_maps(ts_dir, save_dir, display)
+    plot_velocity_maps(ts_dir, save_dir, display, aux_dir=aux_dir)
 
     # print("[13/13] AUX PNG images …")
     # display_aux_images(aux_dir, save_dir, display)

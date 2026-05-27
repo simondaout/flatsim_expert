@@ -29,7 +29,6 @@ Arguments
     --semianual=<yes/no>   Semi-annual terms      [default: no]
     --bianual=<yes/no>     Bi-annual terms        [default: no]
     --steps=<t1,t2,...>    Heaviside step times   [default: None]
-    --cond=<value>         SVD condition number   [default: 1e-5]
     --imref=<n>            Reference image (1-based) [default: 1]
     --dateslim=<dmin,dmax> Date limits e.g. 20141013,20220528 [default: all]
     --nproc=<n>            Number of CPU cores    [default: 4]
@@ -171,7 +170,7 @@ def save_tif(arr, name, ts_dir, driver, gt, proj):
     logger.info(f'Saved: {outname}')
 
 
-def _wls(A, b, w, cond=1e-5):
+def _wls(A, b, w):
     """
     Weighted least-squares:  min ||W(Ax - b)||²
     w : 1-D weight array (not variances — weights applied directly).
@@ -179,7 +178,7 @@ def _wls(A, b, w, cond=1e-5):
     """
     Aw = A * w[:, np.newaxis]
     bw = b * w
-    fsoln = np.linalg.lstsq(Aw, bw, rcond=cond)[0]
+    fsoln = np.linalg.lstsq(Aw, bw, rcond=1e-5)[0]
     try:
         varx   = np.linalg.pinv(A.T @ A)
         res2   = np.sum((b - A @ fsoln) ** 2)
@@ -196,10 +195,10 @@ def _wls(A, b, w, cond=1e-5):
 
 _G = {}   # global state shared across workers in the same process
 
-def _init_workers(N_, M_, dates_, basis_, Mbasis_, cond_, cte_coh_):
+def _init_workers(N_, M_, dates_, basis_, Mbasis_, cte_coh_):
     global _G
     _G = dict(N=N_, M=M_, dates=dates_, basis=basis_, Mbasis=Mbasis_,
-              cond=cond_, cte_coh=cte_coh_)
+              cte_coh=cte_coh_)
 
 
 def _temporal_decomp(disp, sigma):
@@ -213,7 +212,7 @@ def _temporal_decomp(disp, sigma):
     """
     N, M, dates   = _G['N'], _G['M'], _G['dates']
     basis, Mbasis = _G['basis'], _G['Mbasis']
-    cond, cte_coh = _G['cond'], _G['cte_coh']
+    cte_coh = _G['cte_coh']
 
     k  = np.flatnonzero(~np.isnan(disp))
     kk = len(k)
@@ -237,7 +236,7 @@ def _temporal_decomp(disp, sigma):
 
     for inner_iter in range(3):   # iter 0 = init, iter 1-2 = IRLS (as in Fortran)
         w_total = sig_k * pix_w
-        bb, sigmam_tmp = _wls(G, taby, w_total, cond=cond)
+        bb, sigmam_tmp = _wls(G, taby, w_total)
 
         if inner_iter < 2:
             # compute weighted residuals → update pixel weights
@@ -310,7 +309,6 @@ def main():
     parser.add_argument("--semianual",   default='no',  help="Semi-annual [no]")
     parser.add_argument("--bianual",     default='no',  help="Bi-annual [no]")
     parser.add_argument("--steps",       default=None,  help="Step times e.g. 2010.5,2015.2")
-    parser.add_argument("--cond",        type=float, default=1e-5, help="SVD cond [1e-5]")
     parser.add_argument("--cte_coh",     type=float, default=0.5,
                         help="IRLS damping constant — weight = 1/(cte_coh + |res|/rms). "
                              "0.5 is recommended (same as Fortran). [default: 0.5]")
@@ -492,7 +490,7 @@ def main():
         with multiprocessing.Pool(
             processes=nproc,
             initializer=_init_workers,
-            initargs=(N, M, dates, basis, Mbasis, args.cond, args.cte_coh),
+            initargs=(N, M, dates, basis, Mbasis, args.cte_coh),
         ) as pool:
             for line in range(0, new_lines, block_size):
                 end_line = min(line + block_size, new_lines)
