@@ -458,7 +458,7 @@ def main():
             except Exception:
                 w = np.loadtxt(path, comments='#', dtype='f')
             w = w[indexd] if len(w) > N else w[:N]
-            w += std_maps
+            w = np.clip(w, 1e-6, None)
             logger.info(f'{label} weights loaded: min={w.min():.3f} max={w.max():.3f}')
             return w
         logger.info(f'{label} weights: DISABLED — unit weights')
@@ -466,7 +466,7 @@ def main():
 
     in_aps   = _load_weights(aps_path, 'APS')
     in_rms   = _load_weights(rms_path, 'RMS')
-    in_sigma = in_rms * in_aps
+    in_sigma = in_rms + in_aps  # additive uncertainties (equiv. to 1/tab_weight)
 
     # ── save cube to memmap for parallel reads ────────────────────────────────
     mm = np.memmap('disp_cumul_clean', dtype='float32', mode='w+',
@@ -543,14 +543,17 @@ def main():
         mod_c   = np.copy(mod_r)
         mod_c[np.abs(mod_c) > 9999] = 0.
         sq  = (np.nan_to_num(cube_r, nan=0.) - np.nan_to_num(mod_c, nan=0.)) ** 2
-        res = np.sqrt(np.nanmean(sq, axis=(0, 1))) + std_maps
+        res = np.sqrt(np.nanmean(sq, axis=(0, 1)))
+        res = np.clip(res, 1e-6, None)
         del cube_r, mod_r, mod_c
 
-        print('\n  Dates         Residuals')
+        print('\n  Dates         APS residuals')
         for l in range(N):
             print(f'  {idates[l]}    {res[l]:.4f}')
-        np.savetxt(f'sigma_{ii}.txt', res.T, fmt='%.6f')
-        in_sigma = res * in_aps * in_rms
+        np.savetxt(f'aps_{ii}.txt', res.T, fmt='%.6f')
+        # Fortran: tab_weight(k) = (1/(res(k) + cte_coh)) / rmsdate(k)
+        # Python equivalent (in_sigma = uncertainty = 1/weight):
+        in_sigma = (res + args.cte_coh) * in_rms
 
     # ── save coefficient maps (GeoTIFF) ───────────────────────────────────────
     print('\nSaving GeoTIFF outputs …')

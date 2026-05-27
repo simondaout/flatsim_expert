@@ -57,7 +57,7 @@ Steps 1–12 — Validation plots (skipped if --prepare)
   9.  Bt histogram (ascending order) + unwrapping fraction vs Bt / season
  10.  RMS per date + RMS per ifg vs Bt
  11.  Interferogram network             (blue = kept, red = removed)
- 12.  Per-image APS vs time             (APS_N.txt from invers_temp)
+ 12.  Per-image APS vs time             (aps_N.txt from invers_temp)
       Coefficient maps                  (lin_coeff, ampwt_coeff, phiwt_coeff)
       AUX PNG images                    (burst maps, SD maps, …)
 
@@ -698,11 +698,11 @@ def _load_list_images(ts_dir):
 def plot_sigma_vs_time(ts_dir, save_dir, display):
     """Plot per-image APS_N.txt vs time (one curve per iteration)."""
     sigma_files = sorted(
-        glob.glob(os.path.join(ts_dir, "APS_*.txt")),
-        key=lambda p: int(os.path.basename(p).replace("APS_","").replace(".txt",""))
+        glob.glob(os.path.join(ts_dir, "aps_*.txt")),
+        key=lambda p: int(os.path.basename(p).replace("aps_","").replace(".txt",""))
     )
     if not sigma_files:
-        print("  No APS_N.txt files found, skipping.")
+        print("  No aps_N.txt files found, skipping.")
         return
     dates = _load_list_images(ts_dir)
     if not dates:
@@ -713,7 +713,7 @@ def plot_sigma_vs_time(ts_dir, save_dir, display):
     fig, ax = plt.subplots(figsize=(11, 4))
     for fpath, col in zip(sigma_files, colors):
         sigma = np.loadtxt(fpath)
-        niter = os.path.basename(fpath).replace("APS_","").replace(".txt","")
+        niter = os.path.basename(fpath).replace("aps_","").replace(".txt","")
         n = min(len(dec_dates), len(sigma))
         ax.plot(dec_dates[:n], sigma[:n], "o-", color=col, markersize=4,
                 linewidth=0.8, label=f"iter {niter}")
@@ -1274,7 +1274,7 @@ Examples
     print("[10/13] Interferogram network …")
     plot_ifg_network(ts_dir, aux_dir, save_dir, display)
 
-    print("[11/13] Per-image APS (APS_N.txt) …")
+    print("[11/13] Per-image APS (aps_N.txt) …")
     plot_sigma_vs_time(ts_dir, save_dir, display)
 
     print("[12/13] Coefficient maps (lin, ampwt, phiwt) …")
