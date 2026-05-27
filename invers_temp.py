@@ -204,9 +204,7 @@ def _init_workers(N_, M_, dates_, basis_, Mbasis_, cond_, cte_coh_):
 
 def _temporal_decomp(disp, sigma):
     """
-    Invert one pixel time series with an IRLS inner loop (2 iterations),
-    identical to the Fortran model_temp_4var_seas.f90 do_pix_w logic.
-
+    Invert one pixel time series with an IRLS inner loop (2 iterations).
     Inner-loop weight per valid date k:
         w_k = outer_weight_k / (cte_coh + |residual_k| / rms_pixel)
 
@@ -244,7 +242,7 @@ def _temporal_decomp(disp, sigma):
         if inner_iter < 2:
             # compute weighted residuals → update pixel weights
             residuals = taby - G @ bb
-            # rms weighted (same formula as Fortran)
+            # rms weighted
             w2 = w_total ** 2
             rms_pix = np.sqrt(np.sum(residuals**2 * w2) / np.sum(w2))
             if rms_pix > 0:
