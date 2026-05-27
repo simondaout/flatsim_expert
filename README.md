@@ -57,8 +57,6 @@ Runs Step 0 only and exits. It:
 
 ### Step 2 — Run the temporal inversion
 
-**Option A — simplified script (recommended for FLATSIM validation):**
-
 ```bash
 python invers_temp.py data/Tienshan/D107_NORD
 ```
@@ -76,17 +74,6 @@ Key options:
 --steps=2010.5     heaviside steps             [default: none]
 --cte_coh=0.5      IRLS damping (robust WLS)  [default: 0.5]
 --nproc=4          CPU cores                  [default: 4]
-```
-
-**Option B — full script (with spatial iterations):**
-
-```bash
-cd data/Tienshan/D107_NORD/TS
-python invers_temp.py \
-    --cube=CNES_DTs_geo_8rlks.tiff \
-    --list_images=list_images.txt \
-    --rms=inrms.txt --aps=inaps.txt \
-    --linear=yes --seasonal=yes --niter=2 --plot=no
 ```
 
 ### Step 3 — Full validation (prepare + all plots)
@@ -132,21 +119,5 @@ python check_results_inc.py \
 
 ## Output figures — `check_results_inc.py`
 
-Same plots overlaid new (blue) vs previous (red), prefixed with `inc_`.
-
+WIP
 ---
-
-## CLI reference
-
-```
-check_results.py      <track_dir>  [--aux DIR] [--save DIR] [--no-display] [--prepare]
-check_results_inc.py  <new_track>  <prev_track> [--aux DIR] [--prev-aux DIR] [--save DIR] [--no-display]
-invers_temp.py        <track_dir>  [--niter N] [--linear yes/no] [--seasonal yes/no]
-                                   [--semianual yes/no] [--bianual yes/no]
-                                   [--steps t1,t2] [--cte_coh 0.5] [--nproc N]
-                                   [--cube PATH] [--list_images PATH] [--rms PATH] [--aps PATH]
-                                   [--dateslim dmin,dmax] [--imref N] [--plot yes/no]
-```
-
-Both `check_results.py` and `invers_temp.py` accept either the **track directory**
-(containing `TS/` and `AUX/`) or the **TS directory** directly.
