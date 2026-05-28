@@ -65,7 +65,7 @@ python invers_temp.py data/Tienshan/D107_NORD
 ```
 
 Outputs written into `TS/`:
-`lin_coeff.tif`, `ampwt_coeff.tif`, `phiwt_coeff.tif`, `APS_N.txt`, `inversion.eps`, …
+`lin_coeff.tif`, `ampwt_coeff.tif`, `phiwt_coeff.tif`, `aps_N.txt`, `inversion.eps`, …
 
 Key options:
 ```
@@ -103,11 +103,48 @@ python check_results_inc.py \
 
 ---
 
+## Example results — Tian Shan D107 NORD (2014–2022)
+
+### Burst time-latitude distribution
+![Burst time-latitude IW1](figures/check_plot_time_lat_iw1.png)
+
+### Interferogram network (blue = kept, red = removed)
+![Interferogram network](figures/check_ifg_network.png)
+
+### Histogram of kept interferograms by temporal baseline
+![Histogram Bt](figures/check_histo_bt.png)
+
+### Interferogram RMS vs temporal baseline + per-ifg index
+![RMS interferograms](figures/check_rms_ifg_vs_bt.png)
+
+### Ramp residuals — per-IFG variance vs per-image APS
+![Variance comparison](figures/check_variance_comparison.png)
+
+### SD variation along range and azimuth (IW1/2/3)
+| Range | Azimuth |
+|-------|---------|
+| ![SD range](figures/check_sd_sx.png) | ![SD azimuth](figures/check_sd_sy.png) |
+
+### SD constant term and sigma
+| Constant term | Sigma |
+|---------------|-------|
+| ![SD cst](figures/check_sd_cst.png) | ![SD sigma](figures/check_sd_sigma.png) |
+
+### SD tôle ondulée and quadratic azimuth
+| Tôle ondulée | Quadratic azimuth |
+|--------------|-------------------|
+| ![SD syy](figures/check_sd_syy.png) | ![SD qy](figures/check_sd_qy.png) |
+
+### Unwrapping fraction vs season (1-yr ifg)
+![Unwrapping fraction vs season](figures/check_unw_frac_vs_season.png)
+
+---
+
 ## Output figures — `check_results.py`
 
 | Step | Figure | Content |
 |------|--------|---------|
-| 1 | `check_img_plot_time_lat_iwiw.png` | Burst time-latitude distribution |
+| 1 | `check_plot_time_lat_iw*.png` | Burst time-latitude distribution (one per subswath) |
 | 2 | `check_sd_sx.png` | SD variation along range (IW1/2/3, click → date) |
 | 2 | `check_sd_sy.png` | SD variation along azimuth |
 | 2 | `check_sd_qy.png` | Quadratic SD along azimuth |
