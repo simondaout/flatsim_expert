@@ -226,7 +226,7 @@ def _temporal_decomp(disp, uncertainty):
     tabx   = dates[k]
     taby   = disp[k].astype(np.float64)
     # convert per-image uncertainty → weight (large uncertainty = small weight)
-    weight_k = 1.0 / np.clip(uncertainty[k].astype(np.float64), 1e-1, None)
+    weight_k = 1.0 / np.clip(uncertainty[k].astype(np.float64), args.cte_coh, None)
 
     G = np.zeros((kk, M), dtype=np.float64)
     for l in range(Mbasis):
@@ -309,9 +309,9 @@ def main():
     parser.add_argument("--bianual",     default='no',  help="Bi-annual [no]")
     parser.add_argument("--steps",       default=None,  help="Step times e.g. 2010.5,2015.2")
     parser.add_argument("--cond",        type=float, default=1e-5, help="SVD cond [1e-5]")
-    parser.add_argument("--cte_coh",     type=float, default=0.5,
+    parser.add_argument("--cte_coh",     type=float, default=0.4,
                         help="IRLS damping constant — weight = 1/(cte_coh + |res|/rms). "
-                             "0.5 is recommended (same as Fortran). [default: 0.5]")
+                             "0.5 is recommended (same as Fortran). [default: 0.4]")
     parser.add_argument("--imref",       type=int,   default=1,    help="Ref image 1-based [1]")
     parser.add_argument("--dateslim",    default=None,  help="dmin,dmax e.g. 20141013,20220528")
     parser.add_argument("--nproc",       type=int,   default=10,    help="CPU cores [4]")
@@ -449,26 +449,32 @@ def main():
         b.sigmam = np.full((new_lines, new_cols), np.nan, dtype=np.float32)
 
     # ── input weights ─────────────────────────────────────────────────────────
-    def _load_weights(path, label):
+    def _load_weights(path):
         """
-        Read a per-image weight file.
-        Accepts 1-column files (value only) or multi-column files
-        where the value is in the last column.
+        Read a per-image weight file (1-column or last column of multi-column).
+        Returns raw values without epsilon treatment.
         """
         if path and os.path.exists(path):
             raw = np.loadtxt(path, comments='#', dtype='f')
-            # if 2-D, take the last column; if 1-D, use as-is
             w = raw[:, -1] if raw.ndim == 2 else raw.flatten()
             w = w[indexd] if len(w) > N else w[:N]
-            w = np.clip(w, 1e-1, None)
-            logger.info(f'{label} weights loaded: min={w.min():.3f} max={w.max():.3f}')
-            return w
-        logger.info(f'{label} weights: DISABLED — unit weights')
+            return w.astype(np.float32)
         return np.ones(N, dtype=np.float32)
 
-    in_aps   = _load_weights(aps_path, 'APS')
-    in_rms   = _load_weights(rms_path, 'RMS')
-    in_sigma = in_rms * in_aps  # initial uncertainty
+    # APS: σ_APS + ε  (paper: σ_APS(tk) + ε)
+    _aps_raw = _load_weights(aps_path)
+    in_aps  = _aps_raw + args.cte_coh       # initial APS + ε, kept fixed
+    logger.info(f'APS: raw min={_aps_raw.min():.3f} max={_aps_raw.max():.3f} '
+                f'→ in_aps (+ ε): min={in_aps.min():.3f}')
+
+    # RMS: max(σm, ε)  (paper: max(σm(tk), ε))
+    _rms_raw = _load_weights(rms_path)
+    in_rms   = np.clip(_rms_raw, args.cte_coh, None)
+    logger.info(f'RMS: raw min={_rms_raw.min():.3f} max={_rms_raw.max():.3f} '
+                f'→ in_rms (max ε): min={in_rms.min():.3f}')
+
+    # in_sigma = (σ_APS+ε) * max(σm,ε)  — pixel term (|r|+ε) handled in inner loop
+    in_sigma = in_aps * in_rms  # initial uncertainty
 
     # ── save cube to memmap for parallel reads ────────────────────────────────
     mm = np.memmap('disp_cumul_clean', dtype='float32', mode='w+',
@@ -546,14 +552,14 @@ def main():
         mod_c[np.abs(mod_c) > 9999] = 0.
         sq  = (np.nan_to_num(cube_r, nan=0.) - np.nan_to_num(mod_c, nan=0.)) ** 2
         res = np.sqrt(np.nanmean(sq, axis=(0, 1)))
-        res = np.clip(res, 1e-1, None)
         del cube_r, mod_r, mod_c
 
         print('\n  Dates         Residuals')
         for l in range(N):
             print(f'  {idates[l]}    {res[l]:.4f}')
         np.savetxt(f'aps_{ii}.txt', res.T, fmt='%.6f')
-        in_sigma = (res + args.cte_coh) * in_rms * in_aps
+        # Paper: W = 1/[(σ_APS+ε) * max(σm,ε) * (|r|+ε)]
+        in_sigma = (res + args.cte_coh) * in_rms
 
     # ── save coefficient maps (GeoTIFF) ───────────────────────────────────────
     print('\nSaving GeoTIFF outputs …')

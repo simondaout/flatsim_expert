@@ -1227,28 +1227,30 @@ for l in range((Mker)):
     kernels[l].m = np.full((new_lines, new_cols), np.nan)
     kernels[l].sigmam = np.full((new_lines, new_cols), np.nan)
 
-# initialize aps
+# APS: σ_APS + ε  (paper: σ_APS(tk) + ε)
 if arguments["--aps"] is None:
-    in_aps = np.ones((N))  # no weigthing for the first itertion
+    _aps_raw = np.zeros(N, dtype=np.float32)
 else:
-    fimages = arguments["--aps"]
-    raw = np.loadtxt(fimages, comments='#', dtype='f')
-    in_aps = raw[:, -1] if raw.ndim == 2 else raw.flatten()
-    in_aps = np.clip(in_aps, 1e-1, None)  # avoid zero weights
-    logger.info('Input APS: {}'.format(in_aps))
+    fimages  = arguments["--aps"]
+    raw      = np.loadtxt(fimages, comments='#', dtype='f')
+    _aps_raw = (raw[:, -1] if raw.ndim == 2 else raw.flatten()).astype(np.float32)
+in_aps = _aps_raw + cte_coh          # σ_APS + ε
+logger.info(f'APS: raw min={_aps_raw.min():.3f} max={_aps_raw.max():.3f} '
+            f'→ in_aps (+ ε): min={in_aps.min():.3f}')
 
-# initialize rms
+# RMS: max(σm, ε)  (paper: max(σm(tk), ε))
 if arguments["--rms"] is None:
-    in_rms = np.ones((N))  # no weigthing for the first itertion
+    _rms_raw = np.ones(N, dtype=np.float32)
 else:
-    fimages = arguments["--rms"]
-    raw = np.loadtxt(fimages, comments='#', dtype='f')
-    in_rms = raw[:, -1] if raw.ndim == 2 else raw.flatten()
-    in_rms = np.clip(in_rms, 1e-1, None)  # avoid zero weights
-    logger.info('Input RMS: {}'.format(in_rms))
+    fimages  = arguments["--rms"]
+    raw      = np.loadtxt(fimages, comments='#', dtype='f')
+    _rms_raw = (raw[:, -1] if raw.ndim == 2 else raw.flatten()).astype(np.float32)
+in_rms = np.clip(_rms_raw, cte_coh, None)
+logger.info(f'RMS: raw min={_rms_raw.min():.3f} max={_rms_raw.max():.3f} '
+            f'→ in_rms (max ε): min={in_rms.min():.3f}')
 
-## initialize input uncertainties
-in_sigma = in_rms * in_aps
+# in_sigma = (σ_APS+ε) * max(σm,ε)  — pixel term handled in inner loop
+in_sigma = in_aps * in_rms
 logger.info('Input uncertainties: {}'.format(in_sigma))
 
 
@@ -3647,7 +3649,7 @@ def temporal_decomp(disp, uncertainty, cond, ineq, equality):
         tabx = dates[k]
         taby = disp[k].astype(np.float64)
         # convert per-image uncertainty → weight (large uncertainty = small weight)
-        weight_k = 1.0 / np.clip(uncertainty[k].astype(np.float64), 1e-1, None)
+        weight_k = 1.0 / uncertainty[k].astype(np.float64)  # already clipped at cte_coh
 
         G = np.zeros((kk, M), dtype=np.float64)
         for l in range(Mbasis):
@@ -3741,7 +3743,7 @@ for ii in range(int(arguments["--niter"])):
         # aps from rms
         logger.info('Use RMS empirical estimations as input APS for time decomposition')
         in_aps = np.memmap('residuals_emp', dtype='float32', mode='r+', shape=(N,))
-        in_aps = np.clip(in_aps, 1e-1, None)
+        in_aps  = np.clip(in_aps, cte_coh, None) + cte_coh  # σ_APS + ε
         meanaps = np.nanmean(in_aps)
         in_aps[imref] = meanaps
         # update in_sigma
@@ -3855,9 +3857,9 @@ for ii in range(int(arguments["--niter"])):
     np.savetxt('aps_{}.txt'.format(ii), res.T, fmt=('%.6f'))
     # update aps for next iteration
     arguments["--aps"] = 'yes'  # was bug: == instead of =
-    # Fortran: tab_weight(k) = (1/(res(k)+cte_coh)) / rmsdate(k)
-    # Python equivalent (in_sigma = uncertainty = 1/weight):
-    in_sigma = (res + cte_coh) * in_aps * in_rms
+    # Paper: W = 1/[(σ_APS+ε) * max(σm,ε) * (|r|+ε)]
+    # → in_sigma (outer) = (res+ε) * max(σm,ε)
+    in_sigma = (res + cte_coh) * in_rms
 
     del maps_flat, models
 
