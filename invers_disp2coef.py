@@ -457,6 +457,7 @@ parser.add_argument("--plot", default="no", help="Display plots (yes/no)")
 parser.add_argument("--dateslim", default=None, help="Date limits: datemin,datemax")
 parser.add_argument("--nproc", default=10, type=int, help="Number of CPU cores")
 parser.add_argument("--ndatasets", default=1, type=int, help="Number of datasets")
+parser.add_argument("--cte_coh", default=0.5, type=float, help="IRLS damping constant — weight = 1/(cte_coh + |res|/rms). 0.5 is recommended. [default: 0.5]")
 args = parser.parse_args()
 
 # Build arguments dict for backward compatibility with the rest of the code
