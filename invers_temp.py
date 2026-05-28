@@ -315,7 +315,15 @@ def main():
                              "0.5 is recommended (same as Fortran). [default: 0.4]")
     parser.add_argument("--imref",       type=int,   default=1,    help="Ref image 1-based [1]")
     parser.add_argument("--dateslim",    default=None,  help="dmin,dmax e.g. 20141013,20220528")
-    parser.add_argument("--nproc",       type=int,   default=10,    help="CPU cores [4]")
+    parser.add_argument("--nproc",       type=int,   default=4,    help="CPU cores [4]")
+    parser.add_argument("--ref_zone",    default=None,
+                        help="Reference zone for APS std: l0,l1,c0,c1 (0-based). "
+                             "Default: all pixels.")
+    parser.add_argument("--rmspixel",    default=None,
+                        help="Path to RMSpixel map (r4 or tiff). Pixels with "
+                             "RMSpixel > rmsl are excluded from APS computation.")
+    parser.add_argument("--rmsl",        type=float, default=10.0,
+                        help="RMSpixel threshold for APS mask. [default: 10.0]")
     parser.add_argument("--plot",        default='no',  help="Show plots [no]")
     args = parser.parse_args()
 
@@ -404,6 +412,32 @@ def main():
     # write lect_ts.in
     with open('lect_ts.in', 'w') as f:
         np.savetxt(f, (new_cols, new_lines, N), fmt='%6i', newline='\t')
+
+    # ── reference zone for APS computation ───────────────────────────────────
+    if args.ref_zone:
+        l0, l1, c0, c1 = map(int, args.ref_zone.replace(',', ' ').split())
+    else:
+        l0, l1, c0, c1 = 0, new_lines, 0, new_cols
+    logger.info(f'APS reference zone: lines {l0}:{l1}  cols {c0}:{c1}')
+
+    # ── rmspixel mask (exclude bad pixels from APS computation) ──────────────
+    # Auto-detect RMSpixel in TS/ or AUX/ if not explicitly provided
+    aps_mask = np.ones((new_lines, new_cols), dtype=bool)  # True = use pixel
+    rmspixel_path = args.rmspixel or _find(ts_dir, 'RMSpixel', 'RMSpixel.tif')
+    if rmspixel_path and os.path.exists(rmspixel_path):
+        try:
+            from osgeo import gdal as _gdal
+            ds = _gdal.Open(rmspixel_path)
+            rms_px = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+            del ds
+        except Exception:
+            rms_px = np.fromfile(rmspixel_path, dtype=np.float32)
+            rms_px = rms_px.reshape(new_lines, new_cols) if rms_px.size == new_lines * new_cols else None
+        if rms_px is not None:
+            aps_mask = rms_px <= args.rmsl
+            logger.info(f'RMSpixel ({rmspixel_path}): {aps_mask.sum()} / {new_lines*new_cols} pixels used')
+    else:
+        logger.info('RMSpixel not found — using all pixels for APS computation')
 
     # ── build basis functions ─────────────────────────────────────────────────
     cos_times = (list(map(float, args.steps.replace(',', ' ').split()))
@@ -551,9 +585,22 @@ def main():
                             shape=(new_lines, new_cols, N))
         mod_c   = np.copy(mod_r)
         mod_c[np.abs(mod_c) > 9999] = 0.
-        sq  = (np.nan_to_num(cube_r, nan=0.) - np.nan_to_num(mod_c, nan=0.)) ** 2
-        res = np.sqrt(np.nanmean(sq, axis=(0, 1)))
+        # Fortran: somme_rescoh(k) = std of residuals on reference zone
+        #          = sqrt( mean(r²) - mean(r)² )  on masked stable pixels
+        r = (np.nan_to_num(cube_r, nan=np.nan)
+             - np.nan_to_num(mod_c, nan=np.nan))          # (new_lines, new_cols, N)
         del cube_r, mod_r, mod_c
+
+        # apply ref_zone and rmspixel mask
+        r_ref = r[l0:l1, c0:c1, :]                        # (zone_lines, zone_cols, N)
+        mask3d = aps_mask[l0:l1, c0:c1, np.newaxis]       # broadcast over N
+        r_ref  = np.where(mask3d, r_ref, np.nan)
+
+        mean_r  = np.nanmean(r_ref, axis=(0, 1))           # (N,)
+        mean_r2 = np.nanmean(r_ref**2, axis=(0, 1))        # (N,)
+        res = np.sqrt(np.clip(mean_r2 - mean_r**2, 0, None))  # std = sqrt(E[r²]-E[r]²)
+        res = np.clip(res, args.cte_coh, None)
+        del r, r_ref
 
         print('\n  Dates         Residuals')
         for l in range(N):

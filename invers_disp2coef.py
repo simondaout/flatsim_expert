@@ -3505,12 +3505,31 @@ if __name__ == '__main__':
         models = np.memmap('disp_cumul_models', dtype='float32', mode='r+',
                             shape=(new_lines, new_cols, N))
 
-        # compute RMSE
-        # remove outiliers
-        index = np.logical_or(models>9999., models<-9999)
+        # Compute APS residuals as std on reference zone with RMSpixel mask
+        # Fortran: somme_rescoh(k) = sqrt( mean(r²) - mean(r)² ) on stable pixels
+        index = np.logical_or(models > 9999., models < -9999)
         models[index] = 0.
-        squared_diff = (np.nan_to_num(maps_flat,nan=0) - np.nan_to_num(models, nan=0))**2
-        res = np.sqrt(np.nanmean(squared_diff, axis=(0,1))**2)
+        r = (np.nan_to_num(maps_flat, nan=np.nan)
+             - np.nan_to_num(models,   nan=np.nan))   # (new_lines, new_cols, N)
+
+        # reference zone (ref_zone arg, default = full image)
+        l0 = lin_start if lin_start is not None else 0
+        l1 = lin_end   if lin_end   is not None else new_lines
+        c0 = col_start if col_start is not None else 0
+        c1 = col_end   if col_end   is not None else new_cols
+        r_ref = r[l0:l1, c0:c1, :]                         # (zone_lines, zone_cols, N)
+
+        # RMSpixel mask on reference zone (exclude bad pixels)
+        rms_map_r = np.memmap('rms_map', dtype='float32', mode='r',
+                              shape=(new_lines, new_cols))
+        mask_rms  = rms_map_r[l0:l1, c0:c1] <= float(arguments["--threshold_rms"])
+        del rms_map_r
+        mask3d = mask_rms[:, :, np.newaxis]                 # broadcast over N
+        r_ref  = np.where(mask3d, r_ref, np.nan)
+
+        mean_r  = np.nanmean(r_ref, axis=(0, 1))            # (N,)
+        mean_r2 = np.nanmean(r_ref**2, axis=(0, 1))         # (N,)
+        res = np.sqrt(np.clip(mean_r2 - mean_r**2, 0, None))  # std
 
         print('Dates      Residuals  ')
         for l in range(N):
