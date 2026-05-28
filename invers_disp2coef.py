@@ -457,7 +457,7 @@ parser.add_argument("--plot", default="no", help="Display plots (yes/no)")
 parser.add_argument("--dateslim", default=None, help="Date limits: datemin,datemax")
 parser.add_argument("--nproc", default=10, type=int, help="Number of CPU cores")
 parser.add_argument("--ndatasets", default=1, type=int, help="Number of datasets")
-parser.add_argument("--cte_coh", default=0.5, type=float, help="IRLS damping constant — weight = 1/(cte_coh + |res|/rms). 0.5 is recommended. [default: 0.5]")
+parser.add_argument("--cte_coh", default=0.4, type=float, help="IRLS damping constant — weight = 1/(cte_coh + |res|/rms). 0.5 is recommended. [default: 0.5]")
 args = parser.parse_args()
 
 # Build arguments dict for backward compatibility with the rest of the code
@@ -3661,6 +3661,7 @@ def temporal_decomp(disp, uncertainty, cond, ineq, equality):
             # IRLS: iter 0 = standard WLS, iter 1-2 = reweighted (cheap lstsq)
             pix_w = np.ones(kk)
             for inner_iter in range(3):
+                # W = 1 / [(σ_APS + ε) * max(σm, ε) * (| r | +ε)]
                 w_total = weight_k * pix_w
                 sigmad = 1.0 / np.clip(w_total, 1e-1, None)
                 m, sigmam = consInvert(G, taby, sigmad, cond=cond,
@@ -3857,7 +3858,7 @@ for ii in range(int(arguments["--niter"])):
     np.savetxt('aps_{}.txt'.format(ii), res.T, fmt=('%.6f'))
     # update aps for next iteration
     arguments["--aps"] = 'yes'  # was bug: == instead of =
-    # Paper: W = 1/[(σ_APS+ε) * max(σm,ε) * (|r|+ε)]
+    # W = 1/[(σ_APS+ε) * max(σm,ε) * (|r|+ε)]
     # → in_sigma (outer) = (res+ε) * max(σm,ε)
     in_sigma = (res + cte_coh) * in_rms
 

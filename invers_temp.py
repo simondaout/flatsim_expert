@@ -226,7 +226,7 @@ def _temporal_decomp(disp, uncertainty):
     tabx   = dates[k]
     taby   = disp[k].astype(np.float64)
     # convert per-image uncertainty → weight (large uncertainty = small weight)
-    weight_k = 1.0 / np.clip(uncertainty[k].astype(np.float64), args.cte_coh, None)
+    weight_k = 1.0 / uncertainty[k].astype(np.float64)
 
     G = np.zeros((kk, M), dtype=np.float64)
     for l in range(Mbasis):
@@ -236,6 +236,7 @@ def _temporal_decomp(disp, uncertainty):
     pix_w = np.ones(kk)
 
     for inner_iter in range(3):   # iter 0 = init, iter 1-2 = IRLS (as in Fortran)
+        #  W = 1/[(σ_APS+ε) * max(σm,ε) * (|r|+ε)]
         w_total = weight_k * pix_w
         bb, sigmam_tmp = _wls(G, taby, w_total, cond=cond)
 
@@ -558,7 +559,7 @@ def main():
         for l in range(N):
             print(f'  {idates[l]}    {res[l]:.4f}')
         np.savetxt(f'aps_{ii}.txt', res.T, fmt='%.6f')
-        # Paper: W = 1/[(σ_APS+ε) * max(σm,ε) * (|r|+ε)]
+        #  W = 1/[(σ_APS+ε) * max(σm,ε) * (|r|+ε)]
         in_sigma = (res + args.cte_coh) * in_rms
 
     # ── save coefficient maps (GeoTIFF) ───────────────────────────────────────
