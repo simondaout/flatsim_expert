@@ -455,7 +455,7 @@ parser.add_argument("--fulloutput", default="no", help="Produce full output maps
 parser.add_argument("--geotiff", default=None, help="Path to GeoTIFF reference for output projection")
 parser.add_argument("--plot", default="no", help="Display plots (yes/no)")
 parser.add_argument("--dateslim", default=None, help="Date limits: datemin,datemax")
-parser.add_argument("--nproc", default=4, type=int, help="Number of CPU cores")
+parser.add_argument("--nproc", default=8, type=int, help="Number of CPU cores")
 parser.add_argument("--ndatasets", default=1, type=int, help="Number of datasets")
 args = parser.parse_args()
 
@@ -3846,7 +3846,7 @@ for ii in range(int(arguments["--niter"])):
     models[index] = 0.
     squared_diff = (np.nan_to_num(maps_flat, nan=0) - np.nan_to_num(models, nan=0)) ** 2
     res = np.sqrt(np.nanmean(squared_diff, axis=(0, 1)))
-    res = np.clip(res, 1e-6, None)  # floor to avoid zero weights
+    res = np.clip(res, 0.1, None)  # floor to avoid zero weights
 
     print('Dates      APS residuals')
     for l in range(N):

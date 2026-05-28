@@ -314,7 +314,7 @@ def main():
                              "0.5 is recommended (same as Fortran). [default: 0.5]")
     parser.add_argument("--imref",       type=int,   default=1,    help="Ref image 1-based [1]")
     parser.add_argument("--dateslim",    default=None,  help="dmin,dmax e.g. 20141013,20220528")
-    parser.add_argument("--nproc",       type=int,   default=4,    help="CPU cores [4]")
+    parser.add_argument("--nproc",       type=int,   default=8,    help="CPU cores [4]")
     parser.add_argument("--plot",        default='no',  help="Show plots [no]")
     args = parser.parse_args()
 
