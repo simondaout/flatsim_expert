@@ -613,7 +613,6 @@ def main():
         mean_r  = np.nanmean(r_ref, axis=(0, 1))           # (N,)
         mean_r2 = np.nanmean(r_ref**2, axis=(0, 1))        # (N,)
         res = np.sqrt(np.clip(mean_r2 - mean_r**2, 0, None))  # std = sqrt(E[r²]-E[r]²)
-        res = np.clip(res, args.cte_coh, None)
         del r, r_ref
 
         print('\n  Dates         Residuals')
