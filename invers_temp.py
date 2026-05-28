@@ -450,13 +450,17 @@ def main():
 
     # ── input weights ─────────────────────────────────────────────────────────
     def _load_weights(path, label):
+        """
+        Read a per-image weight file.
+        Accepts 1-column files (value only) or multi-column files
+        where the value is in the last column.
+        """
         if path and os.path.exists(path):
-            try:
-                w = np.loadtxt(path, comments='#', usecols=(2,), dtype='f')
-            except Exception:
-                w = np.loadtxt(path, comments='#', dtype='f')
+            raw = np.loadtxt(path, comments='#', dtype='f')
+            # if 2-D, take the last column; if 1-D, use as-is
+            w = raw[:, -1] if raw.ndim == 2 else raw.flatten()
             w = w[indexd] if len(w) > N else w[:N]
-            w += std_maps
+            w = np.clip(w, 1e-6, None)
             logger.info(f'{label} weights loaded: min={w.min():.3f} max={w.max():.3f}')
             return w
         logger.info(f'{label} weights: DISABLED — unit weights')
@@ -541,7 +545,8 @@ def main():
         mod_c   = np.copy(mod_r)
         mod_c[np.abs(mod_c) > 9999] = 0.
         sq  = (np.nan_to_num(cube_r, nan=0.) - np.nan_to_num(mod_c, nan=0.)) ** 2
-        res = np.sqrt(np.nanmean(sq, axis=(0, 1))) + std_maps
+        res = np.sqrt(np.nanmean(sq, axis=(0, 1)))
+        res = np.clip(res, 1e-6, None)
         del cube_r, mod_r, mod_c
 
         print('\n  Dates         Residuals')

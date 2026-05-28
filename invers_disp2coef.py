@@ -1233,11 +1233,8 @@ if arguments["--aps"] is None:
     in_aps = np.ones((N))  # no weigthing for the first itertion
 else:
     fimages = arguments["--aps"]
-    try:
-        in_aps = np.loadtxt(fimages, unpack=True, comments='#', usecols=(2), dtype='f')
-    except:
-        logger.warning('APS file is in decrepicated format, requiered two columns text file`')
-        in_aps = np.loadtxt(fimages, comments='#', dtype='f')
+    raw = np.loadtxt(fimages, comments='#', dtype='f')
+    in_aps = raw[:, -1] if raw.ndim == 2 else raw.flatten()
     in_aps = np.clip(in_aps, 1e-6, None)  # avoid zero weights
     logger.info('Input APS: {}'.format(in_aps))
 
@@ -1246,11 +1243,8 @@ if arguments["--rms"] is None:
     in_rms = np.ones((N))  # no weigthing for the first itertion
 else:
     fimages = arguments["--rms"]
-    try:
-        in_rms = np.loadtxt(fimages, unpack=True, comments='#', usecols=(2), dtype='f')
-    except:
-        logger.warning('RMS file is in decrepicated format, requiered two columns text file`')
-        in_rms = np.loadtxt(fimages, comments='#', dtype='f')
+    raw = np.loadtxt(fimages, comments='#', dtype='f')
+    in_rms = raw[:, -1] if raw.ndim == 2 else raw.flatten()
     in_rms = np.clip(in_rms, 1e-6, None)  # avoid zero weights
     logger.info('Input RMS: {}'.format(in_rms))
 
