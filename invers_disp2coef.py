@@ -455,7 +455,7 @@ parser.add_argument("--fulloutput", default="no", help="Produce full output maps
 parser.add_argument("--geotiff", default=None, help="Path to GeoTIFF reference for output projection")
 parser.add_argument("--plot", default="no", help="Display plots (yes/no)")
 parser.add_argument("--dateslim", default=None, help="Date limits: datemin,datemax")
-parser.add_argument("--nproc", default=8, type=int, help="Number of CPU cores")
+parser.add_argument("--nproc", default=10, type=int, help="Number of CPU cores")
 parser.add_argument("--ndatasets", default=1, type=int, help="Number of datasets")
 args = parser.parse_args()
 
