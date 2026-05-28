@@ -316,6 +316,8 @@ def main():
     parser.add_argument("--imref",       type=int,   default=1,    help="Ref image 1-based [1]")
     parser.add_argument("--dateslim",    default=None,  help="dmin,dmax e.g. 20141013,20220528")
     parser.add_argument("--nproc",       type=int,   default=4,    help="CPU cores [4]")
+    parser.add_argument("--block_size",  type=int,   default=0,
+                        help="Lines per parallel block. 0 = auto from RAM. [default: 0 = auto]")
     parser.add_argument("--ref_zone",    default=None,
                         help="Reference zone for APS std: l0,l1,c0,c1 (0-based). "
                              "Default: all pixels.")
@@ -527,7 +529,19 @@ def main():
 
     # ── iteration loop ────────────────────────────────────────────────────────
     nproc = min(args.nproc, new_lines)
-    block_size = 100
+    if args.block_size > 0:
+        block_size = min(args.block_size, new_lines)
+        logger.info(f'Block size: {block_size} (manual)')
+    else:
+        try:
+            import psutil
+            avail = psutil.virtual_memory().available
+        except ImportError:
+            avail = 8 * 1024**3
+            logger.warning('psutil not found, assuming 8 GB. pip install psutil')
+        bytes_per_line = new_cols * (N*4 + N*4 + M*4*3)
+        block_size = min(max(1, int(0.30 * avail / bytes_per_line)), new_lines)
+        logger.info(f'Block size: {block_size} (auto, RAM={avail/1024**3:.1f}GB)')
 
     for ii in range(args.niter):
         print(f'{"─"*45}')
