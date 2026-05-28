@@ -202,14 +202,13 @@ def _init_workers(N_, M_, dates_, basis_, Mbasis_, cond_, cte_coh_):
               cond=cond_, cte_coh=cte_coh_)
 
 
-def _temporal_decomp(disp, sigma):
+def _temporal_decomp(disp, uncertainty):
     """
     Invert one pixel time series with an IRLS inner loop (2 iterations).
-    Inner-loop weight per valid date k:
-        w_k = outer_weight_k / (cte_coh + |residual_k| / rms_pixel)
-
-    This downweights dates that are outliers for THIS pixel, independently
-    of the outer per-image weighting.
+    uncertainty : per-image in_sigma (large = bad date).
+    Converted to weight = 1/uncertainty before use.
+    Inner-loop pixel weight per date k:
+        pix_w_k = 1 / (cte_coh + |residual_k| / rms_pixel)
     """
     N, M, dates   = _G['N'], _G['M'], _G['dates']
     basis, Mbasis = _G['basis'], _G['Mbasis']
@@ -226,7 +225,8 @@ def _temporal_decomp(disp, sigma):
 
     tabx   = dates[k]
     taby   = disp[k].astype(np.float64)
-    sig_k  = sigma[k].astype(np.float64)   # outer weights (1/in_sigma)
+    # convert per-image uncertainty → weight (large uncertainty = small weight)
+    weight_k = 1.0 / np.clip(uncertainty[k].astype(np.float64), 1e-6, None)
 
     G = np.zeros((kk, M), dtype=np.float64)
     for l in range(Mbasis):
@@ -236,18 +236,16 @@ def _temporal_decomp(disp, sigma):
     pix_w = np.ones(kk)
 
     for inner_iter in range(3):   # iter 0 = init, iter 1-2 = IRLS (as in Fortran)
-        w_total = sig_k * pix_w
+        w_total = weight_k * pix_w
         bb, sigmam_tmp = _wls(G, taby, w_total, cond=cond)
 
         if inner_iter < 2:
             # compute weighted residuals → update pixel weights
             residuals = taby - G @ bb
-            # rms weighted
-            w2 = w_total ** 2
+            w2      = w_total ** 2
             rms_pix = np.sqrt(np.sum(residuals**2 * w2) / np.sum(w2))
             if rms_pix > 0:
                 pix_w = 1.0 / (cte_coh + np.abs(residuals) / rms_pix)
-            # else keep pix_w = 1 (flat weighting)
 
     m      = bb.astype(np.float32)
     sigmam = sigmam_tmp.astype(np.float32)
@@ -257,14 +255,14 @@ def _temporal_decomp(disp, sigma):
 
 
 def _chunk_worker(args):
-    chunk, sigma = args          # chunk: (N, P)
+    chunk, uncertainty = args    # chunk: (N, P), uncertainty: per-image (N,)
     N, P = chunk.shape
     M = _G['M']
     m_all      = np.empty((P, M), dtype=np.float32)
     sigmam_all = np.empty((P, M), dtype=np.float32)
     models_all = np.empty((P, N), dtype=np.float32)
     for i in range(P):
-        m, sm, md = _temporal_decomp(chunk[:, i], sigma)
+        m, sm, md = _temporal_decomp(chunk[:, i], uncertainty)
         m_all[i], sigmam_all[i], models_all[i] = m, sm, md
     return m_all, sigmam_all, models_all
 
@@ -458,7 +456,7 @@ def main():
             except Exception:
                 w = np.loadtxt(path, comments='#', dtype='f')
             w = w[indexd] if len(w) > N else w[:N]
-            w = np.clip(w, 1e-6, None)
+            w += std_maps
             logger.info(f'{label} weights loaded: min={w.min():.3f} max={w.max():.3f}')
             return w
         logger.info(f'{label} weights: DISABLED — unit weights')
@@ -466,7 +464,7 @@ def main():
 
     in_aps   = _load_weights(aps_path, 'APS')
     in_rms   = _load_weights(rms_path, 'RMS')
-    in_sigma = in_rms + in_aps  # additive uncertainties (equiv. to 1/tab_weight)
+    in_sigma = in_rms * in_aps  # initial uncertainty
 
     # ── save cube to memmap for parallel reads ────────────────────────────────
     mm = np.memmap('disp_cumul_clean', dtype='float32', mode='w+',
@@ -511,7 +509,7 @@ def main():
                 ts_block = block.transpose(2, 0, 1).reshape(N, -1)  # (N, bsz*ncol)
                 chunks   = np.array_split(ts_block, nproc, axis=1)
                 results  = pool.map(_chunk_worker,
-                                    [(c, in_sigma) for c in chunks])
+                                    [(c, in_sigma) for c in chunks])  # in_sigma = uncertainty
 
                 m_all, sm_all, md_all = (
                     np.concatenate([r[i] for r in results], axis=0)
@@ -543,17 +541,14 @@ def main():
         mod_c   = np.copy(mod_r)
         mod_c[np.abs(mod_c) > 9999] = 0.
         sq  = (np.nan_to_num(cube_r, nan=0.) - np.nan_to_num(mod_c, nan=0.)) ** 2
-        res = np.sqrt(np.nanmean(sq, axis=(0, 1)))
-        res = np.clip(res, 1e-6, None)
+        res = np.sqrt(np.nanmean(sq, axis=(0, 1))) + std_maps
         del cube_r, mod_r, mod_c
 
-        print('\n  Dates         APS residuals')
+        print('\n  Dates         Residuals')
         for l in range(N):
             print(f'  {idates[l]}    {res[l]:.4f}')
         np.savetxt(f'aps_{ii}.txt', res.T, fmt='%.6f')
-        # Fortran: tab_weight(k) = (1/(res(k) + cte_coh)) / rmsdate(k)
-        # Python equivalent (in_sigma = uncertainty = 1/weight):
-        in_sigma = (res + args.cte_coh) * in_rms
+        in_sigma = (res + args.cte_coh) * in_rms * in_aps
 
     # ── save coefficient maps (GeoTIFF) ───────────────────────────────────────
     print('\nSaving GeoTIFF outputs …')
