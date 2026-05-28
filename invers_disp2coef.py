@@ -772,8 +772,6 @@ maps_memmap[:] = maps[:]
 maps_memmap.flush()  # Force l’écriture sur disque
 write_envi_hdr('disp_cumul_clean', shape=(new_lines, new_cols, N))
 del maps_memmap
-# compute std maps for weighting
-std_maps = np.nanstd(maps)
 
 if arguments["--crop_emp"] == None:
     crop_emp = [0, new_lines, 0, new_cols]
@@ -1235,7 +1233,7 @@ else:
     fimages = arguments["--aps"]
     raw = np.loadtxt(fimages, comments='#', dtype='f')
     in_aps = raw[:, -1] if raw.ndim == 2 else raw.flatten()
-    in_aps = np.clip(in_aps, 1e-6, None)  # avoid zero weights
+    in_aps = np.clip(in_aps, 1e-1, None)  # avoid zero weights
     logger.info('Input APS: {}'.format(in_aps))
 
 # initialize rms
@@ -1245,7 +1243,7 @@ else:
     fimages = arguments["--rms"]
     raw = np.loadtxt(fimages, comments='#', dtype='f')
     in_rms = raw[:, -1] if raw.ndim == 2 else raw.flatten()
-    in_rms = np.clip(in_rms, 1e-6, None)  # avoid zero weights
+    in_rms = np.clip(in_rms, 1e-1, None)  # avoid zero weights
     logger.info('Input RMS: {}'.format(in_rms))
 
 ## initialize input uncertainties
@@ -3648,7 +3646,7 @@ def temporal_decomp(disp, uncertainty, cond, ineq, equality):
         tabx = dates[k]
         taby = disp[k].astype(np.float64)
         # convert per-image uncertainty → weight (large uncertainty = small weight)
-        weight_k = 1.0 / np.clip(uncertainty[k].astype(np.float64), 1e-6, None)
+        weight_k = 1.0 / np.clip(uncertainty[k].astype(np.float64), 1e-1, None)
 
         G = np.zeros((kk, M), dtype=np.float64)
         for l in range(Mbasis):
@@ -3661,7 +3659,7 @@ def temporal_decomp(disp, uncertainty, cond, ineq, equality):
             pix_w = np.ones(kk)
             for inner_iter in range(3):
                 w_total = weight_k * pix_w
-                sigmad = 1.0 / np.clip(w_total, 1e-6, None)
+                sigmad = 1.0 / np.clip(w_total, 1e-1, None)
                 m, sigmam = consInvert(G, taby, sigmad, cond=cond,
                                        ineq='no', equality=equality)
                 if inner_iter < 2:
@@ -3673,7 +3671,7 @@ def temporal_decomp(disp, uncertainty, cond, ineq, equality):
         else:
             # Sequential least-squares with inequality constraints (post-seismic):
             # the solver (fmin_slsqp) is already iterative — no IRLS needed
-            sigmad = 1.0 / np.clip(weight_k, 1e-6, None)
+            sigmad = 1.0 / np.clip(weight_k, 1e-1, None)
             m, sigmam = consInvert(G, taby, sigmad, cond=cond,
                                    ineq=ineq, equality=equality)
 
@@ -3742,7 +3740,7 @@ for ii in range(int(arguments["--niter"])):
         # aps from rms
         logger.info('Use RMS empirical estimations as input APS for time decomposition')
         in_aps = np.memmap('residuals_emp', dtype='float32', mode='r+', shape=(N,))
-        in_aps = np.clip(in_aps, 1e-6, None)
+        in_aps = np.clip(in_aps, 1e-1, None)
         meanaps = np.nanmean(in_aps)
         in_aps[imref] = meanaps
         # update in_sigma

@@ -226,7 +226,7 @@ def _temporal_decomp(disp, uncertainty):
     tabx   = dates[k]
     taby   = disp[k].astype(np.float64)
     # convert per-image uncertainty → weight (large uncertainty = small weight)
-    weight_k = 1.0 / np.clip(uncertainty[k].astype(np.float64), 1e-6, None)
+    weight_k = 1.0 / np.clip(uncertainty[k].astype(np.float64), 1e-1, None)
 
     G = np.zeros((kk, M), dtype=np.float64)
     for l in range(Mbasis):
@@ -460,7 +460,7 @@ def main():
             # if 2-D, take the last column; if 1-D, use as-is
             w = raw[:, -1] if raw.ndim == 2 else raw.flatten()
             w = w[indexd] if len(w) > N else w[:N]
-            w = np.clip(w, 1e-6, None)
+            w = np.clip(w, 1e-1, None)
             logger.info(f'{label} weights loaded: min={w.min():.3f} max={w.max():.3f}')
             return w
         logger.info(f'{label} weights: DISABLED — unit weights')
@@ -546,7 +546,7 @@ def main():
         mod_c[np.abs(mod_c) > 9999] = 0.
         sq  = (np.nan_to_num(cube_r, nan=0.) - np.nan_to_num(mod_c, nan=0.)) ** 2
         res = np.sqrt(np.nanmean(sq, axis=(0, 1)))
-        res = np.clip(res, 1e-6, None)
+        res = np.clip(res, 1e-1, None)
         del cube_r, mod_r, mod_c
 
         print('\n  Dates         Residuals')
