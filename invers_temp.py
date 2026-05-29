@@ -196,10 +196,10 @@ def _wls(A, b, w, cond=1e-5):
 
 _G = {}   # global state shared across workers in the same process
 
-def _init_workers(N_, M_, dates_, basis_, Mbasis_, cond_, cte_coh_):
+def _init_workers(N_, M_, dates_, basis_, Mbasis_, cond_, cte_coh_, avg_):
     global _G
     _G = dict(N=N_, M=M_, dates=dates_, basis=basis_, Mbasis=Mbasis_,
-              cond=cond_, cte_coh=cte_coh_)
+              cond=cond_, cte_coh=cte_coh_, avg=avg_)
 
 
 def _temporal_decomp(disp, uncertainty):
@@ -213,6 +213,7 @@ def _temporal_decomp(disp, uncertainty):
     N, M, dates   = _G['N'], _G['M'], _G['dates']
     basis, Mbasis = _G['basis'], _G['Mbasis']
     cond, cte_coh = _G['cond'], _G['cte_coh']
+    avg           = _G['avg']
 
     k  = np.flatnonzero(~np.isnan(disp))
     kk = len(k)
@@ -224,7 +225,8 @@ def _temporal_decomp(disp, uncertainty):
         return m, sigmam, mdisp
 
     tabx   = dates[k]
-    taby   = disp[k].astype(np.float64)
+    # subtract per-date reference mean (Fortran: tab_deplac(k) = deplac(k) - avg(k))
+    taby   = (disp[k] - avg[k]).astype(np.float64)
     # convert per-image uncertainty → weight (large uncertainty = small weight)
     weight_k = 1.0 / uncertainty[k].astype(np.float64)
 
@@ -424,7 +426,7 @@ def main():
 
     # ── rmspixel mask (exclude bad pixels from APS computation) ──────────────
     # Auto-detect RMSpixel in TS/ or AUX/ if not explicitly provided
-    aps_mask = np.ones((new_lines, new_cols), dtype=bool)  # True = use pixel
+    rms_mask = np.ones((new_lines, new_cols), dtype=bool)  # True = use pixel
     rmspixel_path = args.rmspixel or _find(ts_dir, 'RMSpixel', 'RMSpixel.tif')
     if rmspixel_path and os.path.exists(rmspixel_path):
         try:
@@ -436,8 +438,8 @@ def main():
             rms_px = np.fromfile(rmspixel_path, dtype=np.float32)
             rms_px = rms_px.reshape(new_lines, new_cols) if rms_px.size == new_lines * new_cols else None
         if rms_px is not None:
-            aps_mask = rms_px <= args.rmsl
-            logger.info(f'RMSpixel ({rmspixel_path}): {aps_mask.sum()} / {new_lines*new_cols} pixels used')
+            rms_mask = rms_px <= args.rmsl
+            logger.info(f'RMSpixel ({rmspixel_path}): {rms_mask.sum()} / {new_lines*new_cols} pixels used')
     else:
         logger.info('RMSpixel not found — using all pixels for APS computation')
 
@@ -514,11 +516,11 @@ def main():
     in_sigma = in_aps * in_rms  # initial uncertainty
 
     # ── save cube to memmap for parallel reads ────────────────────────────────
-    mm = np.memmap('disp_cumul_clean', dtype='float32', mode='w+',
+    mm = np.memmap('depl_cumule', dtype='float32', mode='w+',
                    shape=(new_lines, new_cols, N))
     mm[:] = maps[:]
     mm.flush()
-    write_envi_hdr('disp_cumul_clean', shape=(new_lines, new_cols, N))
+    write_envi_hdr('depl_cumule', shape=(new_lines, new_cols, N))
     del mm, maps
 
     mm_models = np.memmap('disp_cumul_models', dtype='float32', mode='w+',
@@ -543,6 +545,9 @@ def main():
         block_size = min(max(1, int(0.30 * avail / bytes_per_line)), new_lines)
         logger.info(f'Block size: {block_size} (auto, RAM={avail/1024**3:.1f}GB)')
 
+    # avg(k): per-date mean on reference zone (Fortran: avg(:)=0)
+    avg = np.zeros(N, dtype=np.float64)
+
     for ii in range(args.niter):
         print(f'{"─"*45}')
         print(f'  Iteration {ii+1}/{args.niter}')
@@ -552,7 +557,7 @@ def main():
         with multiprocessing.Pool(
             processes=nproc,
             initializer=_init_workers,
-            initargs=(N, M, dates, basis, Mbasis, args.cond, args.cte_coh),
+            initargs=(N, M, dates, basis, Mbasis, args.cond, args.cte_coh, avg),
         ) as pool:
             for line in range(0, new_lines, block_size):
                 end_line = min(line + block_size, new_lines)
@@ -560,10 +565,12 @@ def main():
                 logger.info(f'  line {line:4d}/{new_lines}  '
                              f'({time.time()-start_time:.1f}s)')
 
-                cube_r = np.memmap('disp_cumul_clean', dtype='float32',
+                cube_r = np.memmap('depl_cumule', dtype='float32',
                                    mode='r', shape=(new_lines, new_cols, N))
-                block  = cube_r[line:end_line, :, :]    # (bsz, ncol, N)
+                block  = cube_r[line:end_line, :, :].copy()  # (bsz, ncol, N)
                 del cube_r
+                # subtract per-date reference mean (Fortran: tab_deplac=deplac-avg)
+                block -= avg[np.newaxis, np.newaxis, :]
 
                 ts_block = block.transpose(2, 0, 1).reshape(N, -1)  # (N, bsz*ncol)
                 chunks   = np.array_split(ts_block, nproc, axis=1)
@@ -576,6 +583,8 @@ def main():
                 )
                 md_all = md_all.reshape(bsz, new_cols, N)
 
+                # add avg back to models (Fortran: phapred fitted on deplac-avg)
+                md_all += avg[np.newaxis, np.newaxis, :]
                 mm_w = np.memmap('disp_cumul_models', dtype='float32',
                                  mode='r+', shape=(new_lines, new_cols, N))
                 mm_w[line:end_line, :, :] = md_all
@@ -593,7 +602,7 @@ def main():
                 gc.collect()
 
         # ── residuals → update in_sigma ───────────────────────────────────────
-        cube_r  = np.memmap('disp_cumul_clean',  dtype='float32', mode='r',
+        cube_r  = np.memmap('depl_cumule',  dtype='float32', mode='r',
                             shape=(new_lines, new_cols, N))
         mod_r   = np.memmap('disp_cumul_models', dtype='float32', mode='r',
                             shape=(new_lines, new_cols, N))
@@ -607,17 +616,21 @@ def main():
 
         # apply ref_zone and rmspixel mask
         r_ref = r[l0:l1, c0:c1, :]                        # (zone_lines, zone_cols, N)
-        mask3d = aps_mask[l0:l1, c0:c1, np.newaxis]       # broadcast over N
+        mask3d = rms_mask[l0:l1, c0:c1, np.newaxis]       # broadcast over N
         r_ref  = np.where(mask3d, r_ref, np.nan)
 
-        mean_r  = np.nanmean(r_ref, axis=(0, 1))           # (N,)
-        mean_r2 = np.nanmean(r_ref**2, axis=(0, 1))        # (N,)
+        # Use median for robustness (Fortran uses mean on reference zone)
+        median_r = np.nanmedian(r_ref, axis=(0, 1))         # (N,) robust reference
+        mean_r2  = np.nanmean(r_ref**2, axis=(0, 1))        # (N,) for std
+        mean_r   = np.nanmean(r_ref, axis=(0, 1))           # (N,) for std formula
         res = np.sqrt(np.clip(mean_r2 - mean_r**2, 0, None))  # std = sqrt(E[r²]-E[r]²)
+        # Update avg with median (more robust than mean)
+        avg += median_r
         del r, r_ref
 
-        print('\n  Dates         Residuals')
+        print('\n  Dates         APS_std    Median_ref')
         for l in range(N):
-            print(f'  {idates[l]}    {res[l]:.4f}')
+            print(f'  {idates[l]}    {res[l]:.4f}    {median_r[l]:.4f}')
         np.savetxt(f'aps_{ii}.txt', res.T, fmt='%.6f')
         #  W = 1/[(σ_APS+ε) * max(σm,ε) * (|r|+ε)]
         in_sigma = (res + args.cte_coh) * in_rms
@@ -664,7 +677,23 @@ def main():
     plt.close('all')
 
     # ── cleanup ───────────────────────────────────────────────────────────────
-    for tmp in ['disp_cumul_clean', 'disp_cumul_clean.hdr',
+    # ── write disp_cumul_flat = cube - avg ───────────────────────────────────
+    # Fortran equivalent: depl_cumule_ref(k) = deplac(k) - avg(k)
+    logger.info('Writing disp_cumul_flat …')
+    cube_f = np.memmap('depl_cumule',     dtype='float32', mode='r',
+                       shape=(new_lines, new_cols, N))
+    flat_f = np.memmap('disp_cumul_flat', dtype='float32', mode='w+',
+                       shape=(new_lines, new_cols, N))
+    cube_arr = np.array(cube_f)
+    flat_f[:] = np.where(np.isnan(cube_arr),
+                         np.nan,
+                         cube_arr - avg[np.newaxis, np.newaxis, :])
+    flat_f.flush()
+    write_envi_hdr('disp_cumul_flat', shape=(new_lines, new_cols, N))
+    del cube_f, flat_f, cube_arr
+
+    # cleanup temporary working files
+    for tmp in ['depl_cumule', 'depl_cumule.hdr',
                 'disp_cumul_models', 'disp_cumul_models.hdr']:
         if os.path.exists(tmp):
             os.remove(tmp)
