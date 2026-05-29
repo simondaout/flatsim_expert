@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-invers_temp.py — Temporal decomposition of FLATSIM cumulative time series.
-Simplified version of invers_disp2coef.py (Simon Daout).
+invers_temp.py — Temporal decomposition of NSBAS cumulative time series.
+Simplified version of invers_disp2coef.py (Simon Daout), modified from FORTRAN code model_temp_4var_seas.f90 (Marie-Pierre Doin)
 
 Performs ONLY the temporal inversion (linear + seasonal ± semi-annual ±
 bi-annual ± steps).  All spatial iterations, masks, ramps, topo corrections,
-and empirical estimations are removed.
+and empirical estimations are removed. Median susbstraction in the refernce zone is iterated as in FORTRAN code model_temp_4var_seas.f90.
 
 Usage
 -----
@@ -70,14 +70,6 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger('invers_temp.log')
 start_time = time.time()
 
-print()
-print('# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #')
-print('#                                                             #')
-print('#      Temporal Inversion of FLATSIM InSAR time series       #')
-print('#      (simplified — no spatial iterations)                  #')
-print('#                                                             #')
-print('# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #')
-print()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -702,4 +694,12 @@ def main():
 
 
 if __name__ == '__main__':
+    print()
+    print('# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #')
+    print('#                                                             #')
+    print('#      Temporal Inversion of FLATSIM InSAR time series       #')
+    print('#      (simplified — no spatial iterations)                  #')
+    print('#                                                             #')
+    print('# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #')
+    print()
     main()
