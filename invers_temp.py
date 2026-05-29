@@ -527,15 +527,17 @@ def main():
         block_size = min(args.block_size, new_lines)
         logger.info(f'Block size: {block_size} (manual)')
     else:
-        try:
-            import psutil
-            avail = psutil.virtual_memory().available
-        except ImportError:
-            avail = 8 * 1024**3
-            logger.warning('psutil not found, assuming 8 GB. pip install psutil')
-        bytes_per_line = new_cols * (N*4 + N*4 + M*4*3)
-        block_size = min(max(1, int(0.30 * avail / bytes_per_line)), new_lines)
-        logger.info(f'Block size: {block_size} (auto, RAM={avail/1024**3:.1f}GB)')
+        # try:
+        #     import psutil
+        #     avail = psutil.virtual_memory().available
+        # except ImportError:
+        #     avail = 8 * 1024**3
+        #     logger.warning('psutil not found, assuming 8 GB. pip install psutil')
+        # bytes_per_line = new_cols * (N*4 + N*4 + M*4*3)
+        # block_size = min(max(1, int(0.30 * avail / bytes_per_line)), new_lines)
+        # logger.info(f'Block size: {block_size} (auto, RAM={avail/1024**3:.1f}GB)')
+        block_size = 100
+        logger.info(f'Block size: {block_size}')
 
     # avg(k): per-date mean on reference zone (Fortran: avg(:)=0)
     avg = np.zeros(N, dtype=np.float64)
@@ -623,7 +625,13 @@ def main():
         print('\n  Dates         APS_std    Median_ref')
         for l in range(N):
             print(f'  {idates[l]}    {res[l]:.4f}    {median_r[l]:.4f}')
+        # save APS std
         np.savetxt(f'aps_{ii}.txt', res.T, fmt='%.6f')
+        # save median on reference zone (col 0 = YYYYMMDD, col 1 = median, col 2 = APS_std)
+        out = np.column_stack([idates.astype(np.float64), median_r, res])
+        np.savetxt(f'ref_median_{ii}.txt', out,
+                   fmt='%10.0f  %.6f  %.6f',
+                   header='YYYYMMDD  median_ref(rad)  APS_std(rad)')
         #  W = 1/[(σ_APS+ε) * max(σm,ε) * (|r|+ε)]
         in_sigma = (res + args.cte_coh) * in_rms
 
@@ -668,21 +676,21 @@ def main():
         plt.show()
     plt.close('all')
 
-    # ── cleanup ───────────────────────────────────────────────────────────────
-    # ── write disp_cumul_flat = cube - avg ───────────────────────────────────
-    # Fortran equivalent: depl_cumule_ref(k) = deplac(k) - avg(k)
-    logger.info('Writing disp_cumul_flat …')
-    cube_f = np.memmap('depl_cumule',     dtype='float32', mode='r',
-                       shape=(new_lines, new_cols, N))
-    flat_f = np.memmap('disp_cumul_flat', dtype='float32', mode='w+',
-                       shape=(new_lines, new_cols, N))
-    cube_arr = np.array(cube_f)
-    flat_f[:] = np.where(np.isnan(cube_arr),
-                         np.nan,
-                         cube_arr - avg[np.newaxis, np.newaxis, :])
-    flat_f.flush()
-    write_envi_hdr('disp_cumul_flat', shape=(new_lines, new_cols, N))
-    del cube_f, flat_f, cube_arr
+    # # ── cleanup ───────────────────────────────────────────────────────────────
+    # # ── write disp_cumul_flat = cube - avg ───────────────────────────────────
+    # # Fortran equivalent: depl_cumule_ref(k) = deplac(k) - avg(k)
+    # logger.info('Writing disp_cumul_flat …')
+    # cube_f = np.memmap('depl_cumule',     dtype='float32', mode='r',
+    #                    shape=(new_lines, new_cols, N))
+    # flat_f = np.memmap('disp_cumul_flat', dtype='float32', mode='w+',
+    #                    shape=(new_lines, new_cols, N))
+    # cube_arr = np.array(cube_f)
+    # flat_f[:] = np.where(np.isnan(cube_arr),
+    #                      np.nan,
+    #                      cube_arr - avg[np.newaxis, np.newaxis, :])
+    # flat_f.flush()
+    # write_envi_hdr('disp_cumul_flat', shape=(new_lines, new_cols, N))
+    # del cube_f, flat_f, cube_arr
 
     # cleanup temporary working files
     for tmp in ['depl_cumule', 'depl_cumule.hdr',
