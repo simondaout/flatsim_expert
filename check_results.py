@@ -870,6 +870,50 @@ def _imshow_map(ax, arr, cmap, title, unit, pct=95):
     ax.axis("off")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Net quality maps (from CNES_Net_geo_*.tiff)
+# ─────────────────────────────────────────────────────────────────────────────
+def plot_net_maps(ts_dir, save_dir, display):
+    """
+    Display Net quality maps extracted from CNES_Net_geo_*.tiff:
+      RMSpixel  — RMS misclosure per pixel (rad)
+      Net_nifg  — nb interferograms used per pixel
+      Net_nimg  — nb images used per pixel
+      Net_tcoh  — temporal coherence proxy
+      Net_bias  — bias proxy (rad)
+    """
+    bands = [
+        ("RMSpixel", "RMS misclosure\n(rad)",          "hot_r",   98),
+        ("Net_nifg",  "Nb ifg used",                    "viridis", 98),
+        ("Net_nimg",  "Nb images used",                 "viridis", 98),
+        ("Net_tcoh",  "Temporal coherence\n(proxy)",   "RdYlGn",  98),
+        ("Net_bias",  "Bias proxy\n(rad)",              "RdBu_r",  95),
+    ]
+    avail = []
+    for name, title, cmap, pct in bands:
+        arr = _read_tif(os.path.join(ts_dir, f"{name}.tif"))
+        if arr is not None:
+            avail.append((arr, title, cmap, pct))
+
+    if not avail:
+        print("  No Net maps found (run --prepare first to extract them).")
+        return
+
+    n = len(avail)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
+    if n == 1:
+        axes = [axes]
+    for ax, (arr, title, cmap, pct) in zip(axes, avail):
+        _imshow_map(ax, arr, cmap, title, "", pct=pct)
+
+    fig.suptitle("FLATSIM network quality maps  (CNES_Net_geo)", fontsize=11)
+    fig.tight_layout()
+    _savefig(fig, save_dir, "check_net_maps.png")
+    if display:
+        plt.show()
+    plt.close(fig)
+
+
 def plot_velocity_maps(ts_dir, save_dir, display):
     """
     Figure 1 — Velocity comparison
@@ -1184,7 +1228,55 @@ def prepare_inversion(ts_dir, aux_dir):
         f.write("\n".join(aps_vals) + "\n")
     print(f"  inaps.txt       : {len(aps_vals)} values")
 
-    # ── step 6: print ready-to-run command ──────────────────────────────────
+    # ── step 6: extract RMSpixel and Net bands from CNES_Net_geo_*.tiff ──────
+    #
+    #  Band descriptions (FLATSIM docs: products/Net.html):
+    #    band 1 — RMS misclosure per pixel (rad)            → RMSpixel
+    #    band 2 — nb of interferograms used per pixel       → Net_nifg
+    #    band 3 — nb of images used per pixel               → Net_nimg
+    #    band 4 — temporal coherence proxy (from triplets)  → Net_tcoh
+    #    band 5 — bias proxy (rad)                          → Net_bias
+    net_files = sorted(glob.glob(os.path.join(ts_dir, "CNES_Net_geo_*.tiff")))
+    if net_files:
+        try:
+            from osgeo import gdal as _gdal
+            net_path = net_files[0]
+            ds = _gdal.Open(net_path)
+            n_bands = ds.RasterCount
+            band_defs = {
+                1: ("RMSpixel",   "RMS misclosure (rad)"),
+                2: ("Net_nifg",   "Nb interferograms used"),
+                3: ("Net_nimg",   "Nb images used"),
+                4: ("Net_tcoh",   "Temporal coherence proxy"),
+                5: ("Net_bias",   "Bias proxy (rad)"),
+            }
+            driver = _gdal.GetDriverByName("GTiff")
+            gt     = ds.GetGeoTransform()
+            proj   = ds.GetProjection()
+            ncols  = ds.RasterXSize
+            nlines = ds.RasterYSize
+            for b, (name, desc) in band_defs.items():
+                if b > n_bands:
+                    continue
+                arr = ds.GetRasterBand(b).ReadAsArray().astype(np.float32)
+                nd  = ds.GetRasterBand(b).GetNoDataValue()
+                if nd is not None:
+                    arr[arr == nd] = np.nan
+                out_path = os.path.join(ts_dir, f"{name}.tif")
+                out_ds = driver.Create(out_path, ncols, nlines, 1, _gdal.GDT_Float32)
+                out_ds.GetRasterBand(1).WriteArray(arr)
+                out_ds.SetGeoTransform(gt)
+                out_ds.SetProjection(proj)
+                out_ds.GetRasterBand(1).FlushCache()
+                del out_ds
+                print(f"  {name}.tif extracted  ({desc})")
+            del ds
+        except Exception as e:
+            print(f"  WARNING: could not extract Net bands: {e}")
+    else:
+        print("  WARNING: CNES_Net_geo_*.tiff not found — RMSpixel not extracted")
+
+    # ── step 7: print ready-to-run command ──────────────────────────────────
     cube = next((os.path.basename(p)
                  for p in sorted(glob.glob(os.path.join(ts_dir, "CNES_DTs_geo_*.tiff")))),
                 "CNES_DTs_geo_8rlks.tiff")
@@ -1277,10 +1369,13 @@ Examples
     print("[11/13] Per-image APS (aps_N.txt) …")
     plot_sigma_vs_time(ts_dir, save_dir, display)
 
-    print("[12/13] Coefficient maps (lin, ampwt, phiwt) …")
+    print("[12/14] Net quality maps (RMSpixel, nifg, nimg, tcoh, bias) …")
+    plot_net_maps(ts_dir, save_dir, display)
+
+    print("[13/14] Coefficient maps (lin, ampwt, phiwt) …")
     plot_coeff_maps(ts_dir, save_dir, display)
 
-    print("[13/13] Velocity and seasonal maps …")
+    print("[14/14] Velocity and seasonal maps …")
     plot_velocity_maps(ts_dir, save_dir, display)
 
     # print("[13/13] AUX PNG images …")
