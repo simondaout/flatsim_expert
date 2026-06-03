@@ -45,7 +45,7 @@ data/
 ### Default — run everything automatically
 
 ```bash
-python check_results.py data/Tienshan/D107_NORD
+python check_results.py data/Tienshan/D107_NORD/TS
 ```
 
 This single command runs the full pipeline:
@@ -74,10 +74,10 @@ python check_results.py data/Tienshan/D107_NORD --prepare
 
 ```bash
 # First pass — no weights, to identify dates with strong APS
-python invers_temp.py data/Tienshan/D107_NORD --rms=none --aps=none
+python invers_temp.py data/Tienshan/D107_NORD/TS --rms=none --aps=none
 
 # Second pass — with weights and a stable reference zone
-python invers_temp.py data/Tienshan/D107_NORD --ref_zone=2180,2280,2320,2680
+python invers_temp.py data/Tienshan/D107_NORD/TS --ref_zone=2180,2280,2320,2680
 ```
 
 Key options:
@@ -97,7 +97,7 @@ Key options:
 #### Step 3 — Validate inversion results only
 
 ```bash
-python plot_avg_aps.py data/Tienshan/D107_NORD
+python plot_avg_aps.py data/Tienshan/D107_NORD/TS
 ```
 
 Reads `aps_N.txt` and `ref_median_N.txt` from `TS/` and produces:
@@ -110,13 +110,13 @@ use `--ref_zone` to select a stable area.
 #### Step 4 — Full validation without re-running inversion
 
 ```bash
-python check_results.py data/Tienshan/D107_NORD --no-inversion
+python check_results.py data/Tienshan/D107_NORD/TS --no-inversion
 ```
 
 #### Step 5 — Pass extra options to invers_temp.py
 
 ```bash
-python check_results.py data/Tienshan/D107_NORD \
+python check_results.py data/Tienshan/D107_NORD/TS \
     --invers-args "--niter=3 --ref_zone=2180,2280,2320,2680"
 ```
 
@@ -124,7 +124,7 @@ python check_results.py data/Tienshan/D107_NORD \
 
 ```bash
 python check_results_inc.py \
-    data/Tienshan/D107_NORD \
+    data/Tienshan/D107_NORD/TS \
     data/Tienshan/D107_NORD/INCREMENT
 ```
 
