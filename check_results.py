@@ -120,10 +120,13 @@ def _bt_yr(d1, d2):
     return abs(_dec(d2) - _dec(d1))
 
 
-def _savefig(fig, save_dir, name):
+def _savefig(fig, save_dir, name, aux_dir=None):
     path = os.path.join(save_dir, name)
     fig.savefig(path, bbox_inches="tight")
     print(f"  → {path}")
+    if aux_dir and os.path.isdir(aux_dir):
+        import shutil
+        shutil.copy2(path, os.path.join(aux_dir, name))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -395,10 +398,12 @@ def plot_unw_frac_vs_bt(stats, save_dir, display):
     frac  = [r["fraction"] for r in well]
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.scatter(bt, frac, s=10, alpha=0.6, color="steelblue")
+    colors_bt = ["tomato" if f < 0.5 else "steelblue" for f in frac]
+    ax.scatter(bt, frac, s=10, alpha=0.7, color=colors_bt)
+    ax.axhline(0.5, color="red", ls="--", lw=0.8)
     ax.set_xlabel("Temporal baseline (yr)")
     ax.set_ylabel("Unwrapping fraction")
-    ax.set_title("Unwrapping fraction vs temporal baseline")
+    ax.set_title("Unwrapping fraction vs temporal baseline  (red < 0.5)")
     ax.grid(True, alpha=0.3)
     _savefig(fig, save_dir, "check_unw_frac_vs_bt.png")
     if display:
@@ -421,10 +426,12 @@ def plot_unw_frac_vs_bt(stats, save_dir, display):
         fracs.append(r["fraction"])
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.scatter(season, fracs, s=10, alpha=0.6, color="darkorange")
+    colors_s = ["tomato" if f < 0.5 else "steelblue" for f in fracs]
+    ax.scatter(season, fracs, s=10, alpha=0.7, color=colors_s)
+    ax.axhline(0.5, color="red", ls="--", lw=0.8)
     ax.set_xlabel("Fractional year (season)")
     ax.set_ylabel("Unwrapping fraction")
-    ax.set_title("Unwrapping fraction vs season (1-yr ifg only)")
+    ax.set_title("Unwrapping fraction vs season (1-yr ifg only)  (red < 0.5)")
     ax.grid(True, alpha=0.3)
     _savefig(fig, save_dir, "check_unw_frac_vs_season.png")
     if display:
@@ -723,6 +730,42 @@ def plot_sigma_vs_time(ts_dir, save_dir, display):
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     _savefig(fig, save_dir, "check_sigma_vs_time.png")
+    if display:
+        plt.show()
+    plt.close(fig)
+
+
+
+def plot_median_vs_time(ts_dir, save_dir, display):
+    """Plot median residual on reference zone from ref_median_N.txt."""
+    ref_files = sorted(
+        glob.glob(os.path.join(ts_dir, "ref_median_*.txt")),
+        key=lambda p: int(os.path.basename(p).replace("ref_median_","").replace(".txt",""))
+    )
+    if not ref_files:
+        print("  No ref_median_N.txt files found, skipping.")
+        return
+    dates = _load_list_images(ts_dir)
+    if not dates:
+        return
+    dec_dates = [_dec(d) for d in dates]
+    colors = plt.cm.Blues(np.linspace(0.4, 1.0, len(ref_files)))
+    fig, ax = plt.subplots(figsize=(11, 4))
+    for fpath, col in zip(ref_files, colors):
+        arr   = np.loadtxt(fpath, comments="#")
+        niter = os.path.basename(fpath).replace("ref_median_","").replace(".txt","")
+        med   = arr[:, 1] if arr.ndim > 1 else arr
+        n     = min(len(dec_dates), len(med))
+        ax.plot(dec_dates[:n], med[:n], "o-", color=col, markersize=4,
+                linewidth=0.8, label=f"iter {niter}")
+    ax.axhline(0, color="black", lw=0.8, ls="--")
+    ax.set_xlabel("Date (decimal year)")
+    ax.set_ylabel("Median on ref zone (rad)")
+    ax.set_title("Median residual on reference zone vs time\n"
+                 "(should converge to 0 — if large: use --ref_zone)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    _savefig(fig, save_dir, "check_median_vs_time.png")
     if display:
         plt.show()
     plt.close(fig)
@@ -1316,6 +1359,11 @@ Examples
     parser.add_argument("--prepare", action="store_true",
                         help="Prepare input files for invers_temp.py "
                              "(list_images.txt, inrms.txt, inaps.txt) and exit")
+    parser.add_argument("--no-inversion", action="store_true",
+                        help="Skip automatic invers_temp.py run")
+    parser.add_argument("--invers-args", default="",
+                        help="Extra arguments passed to invers_temp.py "
+                             "(e.g. '--niter=3 --ref_zone=100,400,200,800)')")
     args = parser.parse_args()
 
     ts_dir, aux_dir, save_dir = _resolve_dirs(args.track_dir, args.aux, args.save)
@@ -1334,48 +1382,64 @@ Examples
         print("--prepare: done. Exiting before validation plots.")
         return
 
+    # ── Auto-run invers_temp.py (unless --no-inversion) ─────────────────────
+    if not args.no_inversion:
+        import subprocess, sys as _sys
+        invers_script = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "invers_temp.py")
+        if os.path.exists(invers_script):
+            cmd = ([_sys.executable, invers_script, args.track_dir]
+                   + (args.invers_args.split() if args.invers_args else []))
+            print(f"\n[inversion] Running: {chr(32).join(cmd)}")
+            subprocess.run(cmd, check=False)
+        else:
+            print(f"  invers_temp.py not found at {invers_script} — skipping.")
+
     # ── Run all checks ──────────────────────────────────────────────────────
-    print("\n[1/13] Burst time-latitude images …")
+    print("\n[1/15] Burst time-latitude images …")
     plot_burst_images(aux_dir, save_dir, display)
 
-    print("\n[2/13] SD time-series plots …")
+    print("\n[2/15] SD time-series plots …")
     plot_sd_group(aux_dir, save_dir, display)
 
-    print("[3/13] IW merge plots …")
+    print("[3/15] IW merge plots …")
     plot_iw_merge(aux_dir, save_dir, display)
 
-    print("[4/13] Interferogram statistics …")
+    print("[4/15] Interferogram statistics …")
     stats = compute_ifg_stats(ts_dir, aux_dir)
     print_stats(stats)
 
-    print("[5/13] Bt histogram …")
+    print("[5/15] Bt histogram …")
     plot_bt_histogram(stats, save_dir, display)
 
-    print("[6/13] Unwrapping fraction vs Bt / season …")
+    print("[6/15] Unwrapping fraction vs Bt / season …")
     plot_unw_frac_vs_bt(stats, save_dir, display)
 
-    print("[7/13] RMS per date …")
+    print("[7/15] RMS per date …")
     plot_rms_date(ts_dir, save_dir, display)
 
-    print("[8/13] RMS per interferogram …")
+    print("[8/15] RMS per interferogram …")
     plot_rms_interfero(ts_dir, save_dir, display)
 
-    print("[9/13] Variance comparison …")
+    print("[9/15] Variance comparison …")
     plot_variance_comparison(aux_dir, ts_dir, save_dir, display)
 
-    print("[10/13] Interferogram network …")
+    print("[10/15] Interferogram network …")
     plot_ifg_network(ts_dir, aux_dir, save_dir, display)
 
-    print("[11/13] Per-image APS (aps_N.txt) …")
+    print("[11/15] Per-image APS (aps_N.txt) …")
     plot_sigma_vs_time(ts_dir, save_dir, display)
 
-    print("[12/14] Net quality maps (RMSpixel, nifg, nimg, tcoh, bias) …")
+    print("[12/15] Median residual on reference zone …")
+    plot_median_vs_time(ts_dir, save_dir, display)
+
+    print("[13/15] Net quality maps (RMSpixel, nifg, nimg, tcoh, bias) …")
     plot_net_maps(ts_dir, save_dir, display)
 
-    print("[13/14] Coefficient maps (lin, ampwt, phiwt) …")
+    print("[14/15] Coefficient maps (lin, ampwt, phiwt) …")
     plot_coeff_maps(ts_dir, save_dir, display)
 
-    print("[14/14] Velocity and seasonal maps …")
+    print("[15/15] Velocity and seasonal maps …")
     plot_velocity_maps(ts_dir, save_dir, display)
 
     # print("[13/13] AUX PNG images …")
