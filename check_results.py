@@ -77,6 +77,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from datetime import datetime
+import subprocess
+import atexit
 
 # ── project utils ────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(__file__))
@@ -1333,6 +1335,37 @@ def prepare_inversion(ts_dir, aux_dir):
         --linear=yes --seasonal=yes --niter=2 --plot=no
 """)
 
+# -----------------------------------------------------------------------------
+#  Console logging - always mirror everything printed (including the
+#  invers_temp.py subprocess output) to VALIDATION/check_results.log, in
+#  addition to the terminal. Uses the real `tee` so subprocess output
+#  (inherited file descriptors) is captured too, not just this process's
+#  own print() calls.
+# -----------------------------------------------------------------------------
+def _start_logging(save_dir, log_name="check_results.log"):
+    log_path = os.path.join(save_dir, log_name)
+    try:
+        tee_proc = subprocess.Popen(["tee", log_path], stdin=subprocess.PIPE, bufsize=0)
+    except (FileNotFoundError, OSError):
+        print(f"  (warning: 'tee' not available - {log_name} will not be written)")
+        return None
+    os.dup2(tee_proc.stdin.fileno(), 1)
+    os.dup2(tee_proc.stdin.fileno(), 2)
+
+    def _stop():
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            tee_proc.stdin.close()
+            tee_proc.wait(timeout=5)
+        except Exception:
+            pass
+
+    atexit.register(_stop)
+    print(f"Log            : {log_path}")
+    return log_path
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="FLATSIM TS validation — Python equivalent of check_results.sh",
@@ -1370,6 +1403,7 @@ Examples
     display = not args.no_display
 
     os.makedirs(save_dir, exist_ok=True)
+    _start_logging(save_dir)
 
     print(f"TS  dir    : {ts_dir}")
     print(f"AUX dir    : {aux_dir}")
