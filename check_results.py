@@ -74,6 +74,11 @@ import argparse
 import glob
 import numpy as np
 import matplotlib
+if sys.platform != "darwin" and not os.environ.get("DISPLAY"):
+    # Headless / remote Linux server (e.g. inside tmux or an SSH session
+    # without X11 forwarding): force a non-interactive backend so that
+    # plt.show() below can never block waiting for a display.
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from datetime import datetime

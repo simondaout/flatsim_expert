@@ -51,8 +51,8 @@ FIGURES = [
     ("check_plot_time_lat_iw2.png", "01/15", "burst", "Burst time–latitude — IW2"),
     ("check_plot_time_lat_iw3.png", "01/15", "burst", "Burst time–latitude — IW3"),
 
-    ("check_sd_sx.png", "02/15", "sd", "Systematic deviation along range"),
-    ("check_sd_sy.png", "02/15", "sd", "Systematic deviation along azimuth"),
+    ("check_sd_sx.png", "02/15", "sd", "Spectral diversity along range"),
+    ("check_sd_sy.png", "02/15", "sd", "Spectral diversity along azimuth"),
     ("check_sd_qy.png", "02/15", "sd", "Quadratic SD along azimuth"),
     ("check_sd_syy.png", "02/15", "sd", "SD — tôle ondulée (azimuth corrugation)"),
     ("check_sd_sigma.png", "02/15", "sd", "SD — sigma"),
