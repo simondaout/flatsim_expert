@@ -70,6 +70,7 @@ Dependencies
 
 import os
 import sys
+import re
 import argparse
 import glob
 import numpy as np
@@ -797,10 +798,10 @@ def _get_dims(ts_dir):
     return None
 
 
-def _read_coeff_map(ts_dir, name):
+def _read_coeff_map(ts_dir, name, suffix="_coeff"):
     """
-    Read a _coeff map produced by invers_temp.py or invers_temp.py.
-    Tries GeoTIFF (.tif/.tiff) first using gdal, then ENVI .r4.
+    Read a _coeff (or _sigcoeff, pass suffix="_sigcoeff") map produced by
+    invers_temp.py. Tries GeoTIFF (.tif/.tiff) first using gdal, then ENVI .r4.
     Returns (array float32, source_path) or (None, None).
     """
     try:
@@ -809,7 +810,7 @@ def _read_coeff_map(ts_dir, name):
     except ImportError:
         _gdal_ok = False
     for ext in [".tif", ".tiff"]:
-        tif = os.path.join(ts_dir, f"{name}_coeff{ext}")
+        tif = os.path.join(ts_dir, f"{name}{suffix}{ext}")
         if os.path.exists(tif):
             if _gdal_ok:
                 try:
@@ -829,7 +830,7 @@ def _read_coeff_map(ts_dir, name):
                 return arr, tif
             except Exception:
                 pass
-    r4 = os.path.join(ts_dir, f"{name}_coeff.r4")
+    r4 = os.path.join(ts_dir, f"{name}{suffix}.r4")
     if os.path.exists(r4):
         dims = _get_dims(ts_dir)
         if dims:
@@ -882,6 +883,152 @@ def plot_coeff_maps(ts_dir, save_dir, display):
     if display:
         plt.show()
     plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  invers_temp.py coefficient maps (rad, rad/yr) -> LOS physical units (mm,
+#  mm/yr), GeoTIFF
+# ─────────────────────────────────────────────────────────────────────────────
+# Sentinel-1 C-band wavelength: 5.5465763 cm. |factor| = lambda/(4*pi).
+# Applied with a NEGATIVE sign for signed LOS quantities (the velocity
+# itself), so that positive = motion TOWARDS the satellite (range decrease).
+# Applied with the POSITIVE (unsigned) value for magnitude-only quantities
+# (uncertainties, seasonal amplitude), which have no direction and must stay
+# >= 0 - flipping their sign would be physically meaningless.
+LOS_MM_PER_RAD = 4.4138249
+
+# (coeff_name, suffix, type_code, unit, signed)
+#   coeff_name/suffix -> source file "<coeff_name><suffix>.tif" (or .r4)
+#   type_code         -> used in the output filename, e.g. 'MV', 'SIG-MV'
+#   unit              -> 'mmyr' (rate) or 'mm' (magnitude), used in the name
+#   signed            -> True: multiply by -LOS_MM_PER_RAD (directional)
+#                        False: multiply by +LOS_MM_PER_RAD (magnitude, >=0)
+LOS_MM_PRODUCTS = [
+    ("lin",   "_coeff",    "MV",      "mmyr", True),
+    ("lin",   "_sigcoeff", "SIG-MV",  "mmyr", False),
+    ("ampwt", "_coeff",    "AMP",     "mm",   False),
+    ("ampwt", "_sigcoeff", "SIG-AMP", "mm",   False),
+]
+
+
+def _derive_swath_years(ts_dir, track_dir):
+    """
+    Best-effort '<swath>[-<year0>-<year1>]' code, e.g. 'D019SUD-2021-2025',
+    'A131-2020-2025', used to name the exported physical-unit GeoTIFFs.
+
+    Tries, in order:
+      1. the token right before the polarization code (VV/VH/HH/HV) in the
+         dataset directory name for the swath, plus the first two 4-digit
+         years found between the polarization code and '_IW' for the range,
+         e.g. '..._TIBET-HIM-D019SUD-VV-2021-2025_IW123_...' -> 'D019SUD-2021-2025'
+      2. the basename of the track directory for the swath (trailing
+         date-range suffix and separators stripped), plus a year range found
+         in that same basename if present, e.g. 'D019_sud_2021-2025' ->
+         'D019SUD-2021-2025'
+    """
+    base = os.path.basename(os.path.normpath(ts_dir))
+    m = re.search(r'-([A-Za-z0-9]+)-(?:VV|VH|HH|HV)-(.+?)(?:_IW|$)', base)
+    if m:
+        swath = m.group(1).upper()
+        years = re.findall(r'\d{4}', m.group(2))
+        if len(years) >= 2:
+            return f"{swath}-{years[0]}-{years[1]}"
+        return swath
+
+    fallback = os.path.basename(os.path.normpath(track_dir))
+    years = re.search(r'(\d{4})[-_](\d{4})', fallback)
+    swath = re.sub(r'[_-]\d{4}.*$', '', fallback)
+    swath = re.sub(r'[_-]', '', swath).upper() or "TRACK"
+    if years:
+        return f"{swath}-{years.group(1)}-{years.group(2)}"
+    return swath
+
+
+def write_los_product_mm(ts_dir, track_dir, coeff_name, type_code, unit, signed,
+                          suffix="_coeff", swath_years=None):
+    """
+    Convert one invers_temp.py coefficient map (rad or rad/yr) to a LOS
+    GeoTIFF in physical units (mm or mm/yr).
+
+    Writes '<swath[-years]>_<type_code>-LOS_geo<looks>_<unit>.tiff' into
+    ts_dir (next to the other CNES products) and returns its path, or None
+    if the source map or a georeferenced sibling product isn't found.
+    """
+    arr, src = _read_coeff_map(ts_dir, coeff_name, suffix=suffix)
+    if arr is None:
+        print(f"  No {coeff_name}{suffix} found - {type_code} {unit} map not written.")
+        return None
+
+    factor = -LOS_MM_PER_RAD if signed else LOS_MM_PER_RAD
+    arr_out = (arr.astype(np.float64) * factor).astype(np.float32)
+
+    try:
+        from osgeo import gdal as _gdal
+    except ImportError:
+        print(f"  WARNING: gdal not available - cannot write {type_code} {unit} GeoTIFF.")
+        return None
+
+    # Georeferencing: prefer the source file itself if it is already a
+    # GeoTIFF (invers_temp.py wrote it), otherwise borrow it from a sibling
+    # CNES product on the same grid.
+    gt = proj = None
+    if src and src.lower().endswith((".tif", ".tiff")):
+        ds = _gdal.Open(src)
+        if ds is not None:
+            gt, proj = ds.GetGeoTransform(), ds.GetProjection()
+            del ds
+    if gt is None:
+        for pattern in ("CNES_MV-LOS_geo_*.tiff", "CNES_DTs_geo_*.tiff"):
+            for cand in sorted(glob.glob(os.path.join(ts_dir, pattern))):
+                ds = _gdal.Open(cand)
+                if ds is None:
+                    continue
+                if (ds.RasterXSize, ds.RasterYSize) == (arr.shape[1], arr.shape[0]):
+                    gt, proj = ds.GetGeoTransform(), ds.GetProjection()
+                    del ds
+                    break
+                del ds
+            if gt is not None:
+                break
+    if gt is None:
+        print(f"  WARNING: no matching georeferenced product found - "
+              f"{type_code} {unit} GeoTIFF written without a CRS.")
+
+    swath_years = swath_years or _derive_swath_years(ts_dir, track_dir)
+    looks = U.get_looks(ts_dir)  # e.g. '_8rlks'
+    out_path = os.path.join(ts_dir, f"{swath_years}_{type_code}-LOS_geo{looks}_{unit}.tiff")
+
+    driver = _gdal.GetDriverByName("GTiff")
+    nlign, ncol = arr_out.shape
+    out_ds = driver.Create(out_path, ncol, nlign, 1, _gdal.GDT_Float32)
+    band = out_ds.GetRasterBand(1)
+    band.WriteArray(arr_out)
+    band.SetNoDataValue(0)
+    if gt is not None:
+        out_ds.SetGeoTransform(gt)
+        out_ds.SetProjection(proj)
+    band.FlushCache()
+    del out_ds
+
+    note = "+towards satellite" if signed else "magnitude, >= 0"
+    print(f"  -> {out_path}  ({type_code}, {unit}, {note})")
+    return out_path
+
+
+def write_los_mm_products(ts_dir, track_dir, swath_name=None):
+    """
+    Export lin_coeff / lin_sigcoeff / ampwt_coeff / ampwt_sigcoeff (rad,
+    rad/yr) as LOS physical-unit GeoTIFFs (mm, mm/yr) - see LOS_MM_PRODUCTS.
+    Returns the list of output paths written (None entries skipped/missing).
+    """
+    swath_years = swath_name or _derive_swath_years(ts_dir, track_dir)
+    paths = []
+    for coeff_name, suffix, type_code, unit, signed in LOS_MM_PRODUCTS:
+        paths.append(write_los_product_mm(
+            ts_dir, track_dir, coeff_name, type_code, unit, signed,
+            suffix=suffix, swath_years=swath_years,
+        ))
+    return paths
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -989,7 +1136,7 @@ def plot_velocity_maps(ts_dir, save_dir, display):
 
     panels = []
     if mv_arr is not None:
-        panels.append((mv_arr, "FLATSIM velocity\n(CNES_MV-LOS)", "RdBu_r", "mm/yr"))
+        panels.append((mv_arr, "FLATSIM velocity\n(CNES_MV-LOS)", "RdBu_r", "rad/yr"))
     if lin_arr is not None:
         lin_masked = np.where(lin_arr == 0, np.nan, lin_arr)
         panels.append((lin_masked, "Iterated velocity\n(lin_coeff)", "RdBu_r", "rad/yr"))
@@ -1111,6 +1258,23 @@ def display_aux_images(aux_dir, save_dir, display):
 # ─────────────────────────────────────────────────────────────────────────────
 #  MAIN
 # ─────────────────────────────────────────────────────────────────────────────
+def _find_validation_dir(parent, swath_years):
+    """
+    Reuse an existing VALIDATION (or VALIDATION_*) directory under parent if
+    one is already there — so repeated runs don't fragment figures across
+    differently-named folders. Otherwise default to 'VALIDATION_<swath_years>'
+    for a first run, e.g. 'VALIDATION_D019SUD-2021-2025'.
+    """
+    plain = os.path.join(parent, "VALIDATION")
+    if os.path.isdir(plain):
+        return plain
+    existing = sorted(d for d in glob.glob(os.path.join(parent, "VALIDATION_*"))
+                       if os.path.isdir(d))
+    if existing:
+        return existing[0]
+    return os.path.join(parent, f"VALIDATION_{swath_years}")
+
+
 def _resolve_dirs(track_dir_or_ts, aux_override=None, save_override=None):
     """
     Resolve TS, AUX and VALIDATION directories from a flexible input path.
@@ -1119,10 +1283,10 @@ def _resolve_dirs(track_dir_or_ts, aux_override=None, save_override=None):
       - Track directory  (e.g. data/Tienshan/D107_NORD)
         → TS  = <track>/TS
         → AUX = <track>/AUX
-        → OUT = <track>/VALIDATION
+        → OUT = <track>/VALIDATION_<swath-years> (see _find_validation_dir)
       - TS directory explicitly (e.g. data/Tienshan/D107_NORD/TS)
         → AUX auto-detected (replace TS→AUX in parent, or find_aux_dir)
-        → OUT = <parent>/VALIDATION
+        → OUT = <parent>/VALIDATION_<swath-years>
 
     --aux and --save always override the auto-detection.
     """
@@ -1148,7 +1312,8 @@ def _resolve_dirs(track_dir_or_ts, aux_override=None, save_override=None):
             aux_dir = U.find_aux_dir(ts_dir)
 
     # VALIDATION output dir
-    save_dir = os.path.abspath(save_override) if save_override                else os.path.join(parent, "VALIDATION")
+    save_dir = (os.path.abspath(save_override) if save_override
+                else _find_validation_dir(parent, _derive_swath_years(ts_dir, parent)))
 
     return ts_dir, aux_dir, save_dir
 
@@ -1402,6 +1567,10 @@ Examples
     parser.add_argument("--invers-args", default="",
                         help="Extra arguments passed to invers_temp.py "
                              "(e.g. '--niter=3 --ref_zone=100,400,200,800)')")
+    parser.add_argument("--swath-name", default=None,
+                        help="Short '<swath>[-<years>]' code used to name the "
+                             "exported mm/mm-yr GeoTIFFs, e.g. 'D019SUD-2021-2025' "
+                             "(auto-detected from the dataset directory name if omitted)")
     args = parser.parse_args()
 
     ts_dir, aux_dir, save_dir = _resolve_dirs(args.track_dir, args.aux, args.save)
@@ -1477,6 +1646,7 @@ Examples
 
     print("[14/15] Coefficient maps (lin, ampwt, phiwt) …")
     plot_coeff_maps(ts_dir, save_dir, display)
+    write_los_mm_products(ts_dir, args.track_dir, swath_name=args.swath_name)
 
     print("[15/15] Velocity and seasonal maps …")
     plot_velocity_maps(ts_dir, save_dir, display)

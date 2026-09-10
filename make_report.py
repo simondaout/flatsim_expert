@@ -23,7 +23,8 @@ no upload anywhere required.
 Options
 -------
     --val-dir DIR   override the validation figures directory
-                    (default: <track_dir>/VALIDATION)
+                    (default: <track_dir>/VALIDATION, or the first
+                    <track_dir>/VALIDATION_* directory found)
     --log FILE      explicit path to a saved check_results.py console log,
                     used to fill in the summary stats / flagged interferograms.
                     If omitted, the script looks for *.log directly inside
@@ -139,6 +140,21 @@ def parse_log(text):
         stats["_duration"] = f"{h}h{mn:02d}min ({secs:.1f}s)" if h else f"{mn}min{sc:02d}s ({secs:.1f}s)"
 
     return stats, flagged
+
+
+def find_validation_dir(track_dir):
+    """
+    Best-effort: the VALIDATION (or VALIDATION_<swath-years>, written by
+    check_results.py) directory for this track. Prefers a plain 'VALIDATION'
+    if present, else the first 'VALIDATION_*' match, else 'VALIDATION' itself
+    (so the existing "not found" error message downstream stays accurate).
+    """
+    plain = os.path.join(track_dir, "VALIDATION")
+    if os.path.isdir(plain):
+        return plain
+    candidates = sorted(d for d in glob.glob(os.path.join(track_dir, "VALIDATION_*"))
+                         if os.path.isdir(d))
+    return candidates[0] if candidates else plain
 
 
 def find_dataset_dir(track_dir):
@@ -562,13 +578,13 @@ __SECTIONS__
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("track_dir", help="track directory, e.g. data/Turquie/A131")
-    ap.add_argument("--val-dir", default=None, help="validation figures dir (default: <track_dir>/VALIDATION)")
+    ap.add_argument("--val-dir", default=None, help="validation figures dir (default: <track_dir>/VALIDATION or VALIDATION_*)")
     ap.add_argument("--log", default=None, help="saved check_results.py console log (for the stats overview)")
     ap.add_argument("--out", default=None, help="output HTML path (default: <val-dir>/report.html)")
     args = ap.parse_args()
 
     track_dir = os.path.normpath(args.track_dir)
-    val_dir = os.path.normpath(args.val_dir) if args.val_dir else os.path.join(track_dir, "VALIDATION")
+    val_dir = os.path.normpath(args.val_dir) if args.val_dir else find_validation_dir(track_dir)
     out_path = args.out or os.path.join(val_dir, "report.html")
 
     if not os.path.isdir(val_dir):
