@@ -801,7 +801,16 @@ def _get_dims(ts_dir):
 def _read_coeff_map(ts_dir, name, suffix="_coeff"):
     """
     Read a _coeff (or _sigcoeff, pass suffix="_sigcoeff") map produced by
-    invers_temp.py. Tries GeoTIFF (.tif/.tiff) first using gdal, then ENVI .r4.
+    invers_temp.py. Tries GeoTIFF (.tif/.tiff) via gdal first, then ENVI .r4
+    (dtype-correct, doesn't need gdal).
+
+    Deliberately does NOT fall back to matplotlib's plt.imread() for the
+    GeoTIFF when gdal is unavailable: it is unreliable for single-band
+    float32 scientific rasters (PIL often misreads them as if they were an
+    8-bit RGB photo), silently producing a bogus/garbled array and matplotlib's
+    "Clipping input data... Got range [1.0..255.0]" warning downstream in
+    imshow(), instead of a clean failure here.
+
     Returns (array float32, source_path) or (None, None).
     """
     try:
@@ -809,9 +818,11 @@ def _read_coeff_map(ts_dir, name, suffix="_coeff"):
         _gdal_ok = True
     except ImportError:
         _gdal_ok = False
+    tif_found = None
     for ext in [".tif", ".tiff"]:
         tif = os.path.join(ts_dir, f"{name}{suffix}{ext}")
         if os.path.exists(tif):
+            tif_found = tif
             if _gdal_ok:
                 try:
                     ds = _gdal.Open(tif)
@@ -823,19 +834,17 @@ def _read_coeff_map(ts_dir, name, suffix="_coeff"):
                         del ds
                         return arr, tif
                 except Exception as e:
-                    logger.warning(f"gdal cannot read {tif}: {e}")
-            # fallback: matplotlib imread (works for single-band float tif)
-            try:
-                arr = plt.imread(tif).astype(np.float32)
-                return arr, tif
-            except Exception:
-                pass
+                    print(f"  WARNING: gdal cannot read {tif}: {e}")
     r4 = os.path.join(ts_dir, f"{name}{suffix}.r4")
     if os.path.exists(r4):
         dims = _get_dims(ts_dir)
         if dims:
             ncol, nlign = dims
             return np.fromfile(r4, dtype=np.float32).reshape(nlign, ncol), r4
+    if tif_found and not _gdal_ok:
+        print(f"  WARNING: gdal not available (from osgeo import gdal failed) and "
+              f"no {name}{suffix}.r4 fallback found - cannot read {tif_found}. "
+              f"Check that this Python can import osgeo.gdal.")
     return None, None
 
 
@@ -960,14 +969,19 @@ def _read_nifg_mask(ts_dir, shape, pct=2.0):
     """
     path = os.path.join(ts_dir, "Net_nifg.tif")
     if not os.path.exists(path):
+        print("  nifg mask: Net_nifg.tif not found - skipping (run with --prepare, "
+              "or check CNES_Net_geo_*.tiff is present in ts_dir)")
         return None, None
     try:
         from osgeo import gdal as _gdal
     except ImportError:
+        print("  nifg mask: gdal not available (from osgeo import gdal failed) - "
+              "skipping. Check that this Python can import osgeo.gdal.")
         return None, None
     try:
         ds = _gdal.Open(path)
         if ds is None:
+            print(f"  nifg mask: gdal could not open {path} - skipping.")
             return None, None
         band = ds.GetRasterBand(1)
         nifg = band.ReadAsArray().astype(np.float32)
@@ -1023,9 +1037,7 @@ def write_los_product_mm(ts_dir, track_dir, coeff_name, type_code, unit, signed,
             print(f"  nifg mask (<{nifg_pct:g}th pct, threshold={nifg_thresh:.0f} ifgs): "
                   f"{n_before - n_after} px masked ({100*(n_before-n_after)/max(n_before,1):.2f}% "
                   f"of previously-valid pixels)")
-        else:
-            print("  nifg mask: Net_nifg.tif not found/usable - skipping "
-                  "(run with --prepare or check CNES_Net_geo_*.tiff is present)")
+        # else: _read_nifg_mask() already printed the specific reason
 
     try:
         from osgeo import gdal as _gdal
