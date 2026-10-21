@@ -953,7 +953,7 @@ def _derive_swath_years(ts_dir, track_dir):
     return swath
 
 
-def _read_nifg_mask(ts_dir, shape, pct=2.0):
+def _read_nifg_mask(ts_dir, shape, pct=20.0):
     """
     Build a boolean "poorly-constrained" mask from Net_nifg.tif (nb of
     interferograms used per pixel, extracted from CNES_Net_geo_*.tiff by
