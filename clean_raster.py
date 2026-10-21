@@ -139,7 +139,15 @@ def main():
         proj = ds.GetProjectionRef()
         driver = gdal.GetDriverByName('GTiff')
         m = band.ReadAsArray(0, 0, ds.RasterXSize, ds.RasterYSize,
-                              ds.RasterXSize, ds.RasterYSize)
+                              ds.RasterXSize, ds.RasterYSize).astype(np.float32)
+        # Mask no-data as NaN BEFORE ramp estimation / filtering (was left as
+        # the raw GDAL nodata value, e.g. 0.0 for these CNES/invers_temp
+        # products, so no-data pixels were silently treated as real
+        # zero-valued measurements and biased the ramp fit and the Gaussian
+        # filter near swath/no-data boundaries).
+        nodata = band.GetNoDataValue()
+        if nodata is not None:
+            m[m == nodata] = np.nan
     else:
         sformat = 'R4'
         # read lect.in
