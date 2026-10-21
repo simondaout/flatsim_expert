@@ -944,8 +944,54 @@ def _derive_swath_years(ts_dir, track_dir):
     return swath
 
 
+def _read_nifg_mask(ts_dir, shape, pct=2.0):
+    """
+    Build a boolean "poorly-constrained" mask from Net_nifg.tif (nb of
+    interferograms used per pixel, extracted from CNES_Net_geo_*.tiff by
+    prepare_inversion()). Pixels with fewer interferograms than the `pct`-th
+    percentile of the per-pixel count (over valid/processed pixels) sit near
+    swath/no-data edges, layover-shadow, or other low-redundancy zones where
+    the per-pixel temporal fit is poorly constrained - these are masked out,
+    the same way the already-nodata pixels are.
+
+    Returns (mask, threshold) where mask is a boolean array (True = exclude)
+    matching `shape`, or (None, None) if Net_nifg.tif is missing, unreadable,
+    or its grid does not match `shape` (caller should skip masking then).
+    """
+    path = os.path.join(ts_dir, "Net_nifg.tif")
+    if not os.path.exists(path):
+        return None, None
+    try:
+        from osgeo import gdal as _gdal
+    except ImportError:
+        return None, None
+    try:
+        ds = _gdal.Open(path)
+        if ds is None:
+            return None, None
+        band = ds.GetRasterBand(1)
+        nifg = band.ReadAsArray().astype(np.float32)
+        nd = band.GetNoDataValue()
+        del ds
+    except Exception as e:
+        print(f"  WARNING: cannot read Net_nifg.tif: {e}")
+        return None, None
+    if nd is not None:
+        nifg[nifg == nd] = np.nan
+    if nifg.shape != shape:
+        print(f"  WARNING: Net_nifg.tif shape {nifg.shape} != coeff map shape "
+              f"{shape} - skipping nifg-based masking.")
+        return None, None
+    valid = nifg[~np.isnan(nifg)]
+    if valid.size == 0:
+        return None, None
+    threshold = float(np.percentile(valid, pct))
+    mask = np.isnan(nifg) | (nifg < threshold)
+    return mask, threshold
+
+
 def write_los_product_mm(ts_dir, track_dir, coeff_name, type_code, unit, signed,
-                          suffix="_coeff", swath_years=None):
+                          suffix="_coeff", swath_years=None, nifg_pct=2.0):
     """
     Convert one invers_temp.py coefficient map (rad or rad/yr) to a LOS
     GeoTIFF in physical units (mm or mm/yr).
@@ -953,6 +999,12 @@ def write_los_product_mm(ts_dir, track_dir, coeff_name, type_code, unit, signed,
     Writes '<swath[-years]>_<type_code>-LOS_geo<looks>_<unit>.tiff' into
     ts_dir (next to the other CNES products) and returns its path, or None
     if the source map or a georeferenced sibling product isn't found.
+
+    nifg_pct: if not None, pixels constrained by fewer interferograms than
+    this percentile of Net_nifg.tif (see _read_nifg_mask) are additionally
+    masked out (set to no-data) - these sit near no-data/swath edges and are
+    poorly constrained, producing a visible edge bias/"blocky" artifact
+    otherwise. Pass None to disable this masking.
     """
     arr, src = _read_coeff_map(ts_dir, coeff_name, suffix=suffix)
     if arr is None:
@@ -961,6 +1013,19 @@ def write_los_product_mm(ts_dir, track_dir, coeff_name, type_code, unit, signed,
 
     factor = -LOS_MM_PER_RAD if signed else LOS_MM_PER_RAD
     arr_out = (arr.astype(np.float64) * factor).astype(np.float32)
+
+    if nifg_pct is not None:
+        nifg_mask, nifg_thresh = _read_nifg_mask(ts_dir, arr_out.shape, pct=nifg_pct)
+        if nifg_mask is not None:
+            n_before = int(np.sum(~np.isnan(arr_out)))
+            arr_out[nifg_mask] = np.nan
+            n_after = int(np.sum(~np.isnan(arr_out)))
+            print(f"  nifg mask (<{nifg_pct:g}th pct, threshold={nifg_thresh:.0f} ifgs): "
+                  f"{n_before - n_after} px masked ({100*(n_before-n_after)/max(n_before,1):.2f}% "
+                  f"of previously-valid pixels)")
+        else:
+            print("  nifg mask: Net_nifg.tif not found/usable - skipping "
+                  "(run with --prepare or check CNES_Net_geo_*.tiff is present)")
 
     try:
         from osgeo import gdal as _gdal
@@ -1015,18 +1080,22 @@ def write_los_product_mm(ts_dir, track_dir, coeff_name, type_code, unit, signed,
     return out_path
 
 
-def write_los_mm_products(ts_dir, track_dir, swath_name=None):
+def write_los_mm_products(ts_dir, track_dir, swath_name=None, nifg_pct=2.0):
     """
     Export lin_coeff / lin_sigcoeff / ampwt_coeff / ampwt_sigcoeff (rad,
     rad/yr) as LOS physical-unit GeoTIFFs (mm, mm/yr) - see LOS_MM_PRODUCTS.
     Returns the list of output paths written (None entries skipped/missing).
+
+    nifg_pct: percentile threshold passed to write_los_product_mm (see
+    _read_nifg_mask) - pixels constrained by fewer interferograms than this
+    percentile of Net_nifg.tif are masked out. Pass None to disable.
     """
     swath_years = swath_name or _derive_swath_years(ts_dir, track_dir)
     paths = []
     for coeff_name, suffix, type_code, unit, signed in LOS_MM_PRODUCTS:
         paths.append(write_los_product_mm(
             ts_dir, track_dir, coeff_name, type_code, unit, signed,
-            suffix=suffix, swath_years=swath_years,
+            suffix=suffix, swath_years=swath_years, nifg_pct=nifg_pct,
         ))
     return paths
 
@@ -1571,6 +1640,14 @@ Examples
                         help="Short '<swath>[-<years>]' code used to name the "
                              "exported mm/mm-yr GeoTIFFs, e.g. 'D019SUD-2021-2025' "
                              "(auto-detected from the dataset directory name if omitted)")
+    parser.add_argument("--nifg-pct", type=float, default=2.0,
+                        help="Mask out pixels constrained by fewer interferograms "
+                             "than this percentile of Net_nifg.tif when writing the "
+                             "mm/mm-yr LOS GeoTIFFs (removes the poorly-constrained "
+                             "edge/layover-shadow pixels near no-data boundaries). "
+                             "[default: 2.0]")
+    parser.add_argument("--no-nifg-mask", action="store_true",
+                        help="Disable the Net_nifg.tif-based edge masking above")
     args = parser.parse_args()
 
     ts_dir, aux_dir, save_dir = _resolve_dirs(args.track_dir, args.aux, args.save)
@@ -1646,7 +1723,8 @@ Examples
 
     print("[14/15] Coefficient maps (lin, ampwt, phiwt) …")
     plot_coeff_maps(ts_dir, save_dir, display)
-    write_los_mm_products(ts_dir, args.track_dir, swath_name=args.swath_name)
+    write_los_mm_products(ts_dir, args.track_dir, swath_name=args.swath_name,
+                          nifg_pct=None if args.no_nifg_mask else args.nifg_pct)
 
     print("[15/15] Velocity and seasonal maps …")
     plot_velocity_maps(ts_dir, save_dir, display)
