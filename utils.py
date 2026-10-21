@@ -56,13 +56,26 @@ def _extract_trackname(path):
 
 
 def get_looks(ts_dir):
-    """Return the looks suffix string, e.g. '_8rlks', from MV-LOS tiff."""
-    matches = glob.glob(os.path.join(ts_dir, "CNES_MV-LOS_radar_*.tiff"))
-    if not matches:
-        return "_8rlks"
-    fname  = os.path.basename(matches[0])
-    parts  = fname.replace(".tiff", "").split("_")
-    return "_" + parts[3]   # e.g. '8rlks' → '_8rlks'
+    """
+    Return the looks suffix string, e.g. '_8rlks', from a CNES_MV-LOS_radar
+    tiff's filename.
+
+    The glob below can match more than one file: besides the expected
+    'CNES_MV-LOS_radar_8rlks.tiff', some tracks also carry a per-burst
+    intermediate product like 'CNES_MV-LOS_radar_b1_8rlks.tiff' (extra "b1"
+    token). Picking matches[0] and indexing a fixed split position (the old
+    code: parts[3]) silently grabbed "b1" instead of "8rlks" whenever that
+    second file happened to sort/glob first - propagating "_b1" into every
+    exported mm/mm-yr GeoTIFF name instead of "_8rlks". Match the trailing
+    "_<N>rlks" right before the extension instead, which is correct
+    regardless of how many extra tokens precede it or which file is found
+    first.
+    """
+    for m in sorted(glob.glob(os.path.join(ts_dir, "CNES_MV-LOS_radar_*.tiff"))):
+        mo = re.search(r'_(\d+rlks)\.tiff$', os.path.basename(m))
+        if mo:
+            return "_" + mo.group(1)
+    return "_8rlks"
 
 
 # --------------------------------------------------------------------------- #
