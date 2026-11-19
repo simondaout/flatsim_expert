@@ -62,7 +62,6 @@ from osgeo import gdal, osr
 # check_results.py. Pass --scale=1 to keep raw radians instead.
 LOS_MM_PER_RAD = -4.4138249
 
-
 def read_list_images(path):
     """
     Read a FLATSIM list_images.txt (same 6-column layout read elsewhere in
@@ -110,34 +109,11 @@ def find_list_images(cube_path):
     return cand if os.path.isfile(cand) else None
 
 
-def detect_zero_reference(ds, imref, step=8):
-    """
-    Some cubes are already referenced to image imref (that band is then 0
-    everywhere, and 0 is a legitimate value there); in others (e.g. raw
-    FLATSIM cubes with nodata=0) the band holds real values and 0 means
-    "no data". Tell them apart on a decimated copy of the cube: True if
-    band imref is (almost) never non-zero where the cube has data.
-    """
-    nb = ds.RasterCount
-    other = nb - 1 if imref != nb - 1 else 0
-    if other == imref:
-        return False
-    bx, by = max(ds.RasterXSize // step, 1), max(ds.RasterYSize // step, 1)
-    ref = ds.GetRasterBand(imref + 1).ReadAsArray(buf_xsize=bx, buf_ysize=by).astype(np.float64)
-    oth = ds.GetRasterBand(other + 1).ReadAsArray(buf_xsize=bx, buf_ysize=by).astype(np.float64)
-    valid = np.isfinite(oth) & (oth != 0) & (oth != 9990) & (oth != 9999)
-    if valid.sum() == 0:
-        return False
-    return float(np.mean(np.isfinite(ref[valid]) & (ref[valid] != 0))) < 1e-3
-
-
-def read_window(ds, line, col, w=0, imref=0, zero_ref=False):
+def read_window(ds, line, col, w=0):
     """
     Read the band stack in the (2w+1)x(2w+1) window centered on a pixel
     (clipped at the cube edges) and mask invalid values (nodata, 9990, 9999,
     NaN) with NaN. Returns an array (nbands, ny, nx).
-    zero_ref: band imref is a zero reference band (see detect_zero_reference),
-    so 0 is valid there unless the whole pixel is masked.
     """
     nbands = ds.RasterCount
     x0, y0 = max(col - w, 0), max(line - w, 0)
@@ -148,15 +124,8 @@ def read_window(ds, line, col, w=0, imref=0, zero_ref=False):
     bad = (arr == 9990) | (arr == 9999) | ~np.isfinite(arr)
     nd = ds.GetRasterBand(1).GetNoDataValue()
     if nd is not None and np.isfinite(nd):
-        zero_nd = (arr == nd)
-        if zero_ref:
-            zero_nd[imref] = False          # 0 is a valid value in the reference band
-        bad |= zero_nd
+        bad |= (arr == nd)
     arr[bad] = np.nan
-    if zero_ref and nbands > 1:
-        # pixels masked in every other band (e.g. lakes) are invalid in the reference band too
-        others = np.arange(nbands) != imref
-        arr[imref][np.all(np.isnan(arr[others]), axis=0)] = np.nan
     return arr
 
 
@@ -390,13 +359,8 @@ def main():
     # shifts even if that date is later filtered out of the plot
     imref_date = dates[imref]
 
-    zero_ref = detect_zero_reference(ds, imref)
-    print(f"Reference band   : band {imref + 1} is "
-          + ("a zero reference (0 = valid there)" if zero_ref
-             else "regular data (0 = nodata, masked)"))
-    warrs = [read_window(ds, l, c, w=args.windowsize, imref=imref, zero_ref=zero_ref)
-             for l, c in zip(lines, cols)]
-    rarr = read_window(ds, args.lineref, args.columnref, w=wref, imref=imref, zero_ref=zero_ref)
+    warrs = [read_window(ds, l, c, w=args.windowsize) for l, c in zip(lines, cols)]
+    rarr = read_window(ds, args.lineref, args.columnref, w=wref)
     vref = np.isfinite(rarr).sum(axis=(1, 2))   # valid window pixels of the reference, per date
 
     # Per pixel: the time series is set to 0 at the reference image imref. If the pixel
