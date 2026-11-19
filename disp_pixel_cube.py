@@ -5,7 +5,7 @@
 # Author        : Simon DAOUT (CRPG-ENSG)
 # Adapted from invers_disp_pixel.py: same pixel-vs-reference-pixel plotting
 # idea, but reading directly from a FLATSIM CNES_DTs_geo_*.tiff cube (one
-# GeoTIFF band per date, dates taken from the accompanying list_images.txt)
+# GeoTIFF band per date, dates taken from the cube metadata, or from list_images.txt)
 # instead of the raw depl_cumule BIP binary + lect.in. No basis-function
 # inversion / decomposition here (see invers_disp_pixel.py / invers_temp.py
 # for that) — this is the raw, per-pixel double-difference time series:
@@ -40,7 +40,9 @@ Example, several pixels (one panel per pixel, all shown on the map):
 """
 
 import os
+import re
 import sys
+import warnings
 import argparse
 import numpy as np
 
@@ -76,33 +78,100 @@ def read_list_images(path):
     return idates, dates
 
 
+def read_dates_from_cube(ds):
+    """
+    Read the acquisition date of each band from the cube's own metadata
+    (GDAL band descriptions, e.g. "Bande tserie: 20210608", stored in the
+    GeoTIFF or in its .aux.xml sidecar, which must stay next to the cube).
+    Returns (idates [YYYYMMDD ints], dates [decimal years], same convention as
+    the 'decimal date' column of list_images.txt: year + doy/365.1), or None
+    if any band has no YYYYMMDD date in its description.
+    """
+    idates = []
+    for b in range(1, ds.RasterCount + 1):
+        m = re.search(r"(?<!\d)(\d{8})(?!\d)", ds.GetRasterBand(b).GetDescription() or "")
+        if not m:
+            return None
+        try:
+            datetime.strptime(m.group(1), "%Y%m%d")
+        except ValueError:
+            return None
+        idates.append(int(m.group(1)))
+    idates = np.array(idates, dtype=int)
+    dates = np.array([
+        d.year + float(d.strftime("%j")) / 365.1
+        for d in (datetime.strptime(str(i), "%Y%m%d") for i in idates)])
+    return idates, dates
+
+
 def find_list_images(cube_path):
     """list_images.txt is expected next to the cube (same TS directory)."""
     cand = os.path.join(os.path.dirname(cube_path), "list_images.txt")
     return cand if os.path.isfile(cand) else None
 
 
-def read_pixel_series(ds, line, col, w=0):
+def detect_zero_reference(ds, imref, step=8):
     """
-    Read the full band stack at one pixel (or the median over a
-    (2w+1)x(2w+1) window centered on it, if w > 0).
-    Returns a 1-D array of length nbands, NaN where nodata.
+    Some cubes are already referenced to image imref (that band is then 0
+    everywhere, and 0 is a legitimate value there); in others (e.g. raw
+    FLATSIM cubes with nodata=0) the band holds real values and 0 means
+    "no data". Tell them apart on a decimated copy of the cube: True if
+    band imref is (almost) never non-zero where the cube has data.
+    """
+    nb = ds.RasterCount
+    other = nb - 1 if imref != nb - 1 else 0
+    if other == imref:
+        return False
+    bx, by = max(ds.RasterXSize // step, 1), max(ds.RasterYSize // step, 1)
+    ref = ds.GetRasterBand(imref + 1).ReadAsArray(buf_xsize=bx, buf_ysize=by).astype(np.float64)
+    oth = ds.GetRasterBand(other + 1).ReadAsArray(buf_xsize=bx, buf_ysize=by).astype(np.float64)
+    valid = np.isfinite(oth) & (oth != 0) & (oth != 9990) & (oth != 9999)
+    if valid.sum() == 0:
+        return False
+    return float(np.mean(np.isfinite(ref[valid]) & (ref[valid] != 0))) < 1e-3
+
+
+def read_window(ds, line, col, w=0, imref=0, zero_ref=False):
+    """
+    Read the band stack in the (2w+1)x(2w+1) window centered on a pixel
+    (clipped at the cube edges) and mask invalid values (nodata, 9990, 9999,
+    NaN) with NaN. Returns an array (nbands, ny, nx).
+    zero_ref: band imref is a zero reference band (see detect_zero_reference),
+    so 0 is valid there unless the whole pixel is masked.
     """
     nbands = ds.RasterCount
-    if w > 0:
-        arr = ds.ReadAsArray(
-            xoff=max(col - w, 0), yoff=max(line - w, 0),
-            xsize=2 * w + 1, ysize=2 * w + 1,
-        ).astype(np.float64)  # (nbands, ny, nx)
-        series = np.nanmedian(arr, axis=(1, 2))
-    else:
-        arr = ds.ReadAsArray(xoff=col, yoff=line, xsize=1, ysize=1).astype(np.float64)
-        series = arr.reshape(nbands)
+    x0, y0 = max(col - w, 0), max(line - w, 0)
+    x1, y1 = min(col + w + 1, ds.RasterXSize), min(line + w + 1, ds.RasterYSize)
+    arr = ds.ReadAsArray(xoff=x0, yoff=y0, xsize=x1 - x0, ysize=y1 - y0).astype(np.float64)
+    arr = arr.reshape(nbands, y1 - y0, x1 - x0)
 
+    bad = (arr == 9990) | (arr == 9999) | ~np.isfinite(arr)
     nd = ds.GetRasterBand(1).GetNoDataValue()
-    if nd is not None:
-        series[series == nd] = np.nan
-    return series
+    if nd is not None and np.isfinite(nd):
+        zero_nd = (arr == nd)
+        if zero_ref:
+            zero_nd[imref] = False          # 0 is a valid value in the reference band
+        bad |= zero_nd
+    arr[bad] = np.nan
+    if zero_ref and nbands > 1:
+        # pixels masked in every other band (e.g. lakes) are invalid in the reference band too
+        others = np.arange(nbands) != imref
+        arr[imref][np.all(np.isnan(arr[others]), axis=0)] = np.nan
+    return arr
+
+
+def series_from_window(arr, band, stat="mean"):
+    """
+    Reference each pixel of the window to its own value at `band` (set to 0
+    there, as in invers_disp_pixel.py; a pixel NaN at `band` just drops out),
+    then average the window ignoring NaN (nanmean, or nanmedian).
+    Returns a 1-D array of length nbands (NaN where no valid pixel is left).
+    """
+    arr = arr - arr[band][None, :, :]
+    flat = arr.reshape(arr.shape[0], -1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)  # all-NaN slices
+        return np.nanmean(flat, axis=1) if stat == "mean" else np.nanmedian(flat, axis=1)
 
 
 def pixel_to_lonlat(gt, proj_wkt, col, row):
@@ -196,7 +265,9 @@ def main():
     p.add_argument("--cube", required=True,
                     help="Path to a FLATSIM CNES_DTs_geo_*.tiff (or _radar_) cube")
     p.add_argument("--list_images", default=None,
-                    help="Path to list_images.txt (default: next to --cube)")
+                    help="Path to list_images.txt. Optional: by default the dates are read "
+                         "from the cube metadata (band descriptions); "
+                         "list_images.txt next to --cube is only used as a fallback")
     p.add_argument("--line", "--lines", required=True,
                     help="Pixel line (row, 0-based); several pixels: comma-separated "
                          "list, e.g. 3485,3529,3540")
@@ -213,7 +284,7 @@ def main():
                          f"[default: {LOS_MM_PER_RAD} -> mm, +towards satellite; "
                          f"pass --scale=1 to keep raw radians]")
     p.add_argument("--windowsize", type=int, default=0,
-                    help="Median over a (2w+1)x(2w+1) window around the pixel [default: 0]")
+                    help="Half-size w of the (2w+1)x(2w+1) window around the pixel, averaged ignoring NaN (see --stat) [default: 0]")
     p.add_argument("--windowrefsize", type=int, default=None,
                     help="Same, around the reference pixel [default: --windowsize]")
     p.add_argument("--linear", default="yes",
@@ -230,6 +301,11 @@ def main():
                          "[default: auto, full data range]")
     p.add_argument("--bounds", default=None,
                     help="yMin,yMax for the y-axis [default: auto]")
+    p.add_argument("--stat", choices=["mean", "median"], default="mean",
+                    help="Statistic over the (2w+1)x(2w+1) window, NaN ignored "
+                         "[default: mean]")
+    p.add_argument("--cmap", default="coolwarm",
+                    help="Matplotlib colormap of the localization map [default: coolwarm]")
     p.add_argument("--sharey", action="store_true",
                     help="With several pixels: same y-axis (ordinates) for all "
                          "panels, so the pixels are directly comparable "
@@ -262,18 +338,31 @@ def main():
                   f"must have the same number of values")
     npix = len(lines)
 
-    list_images = args.list_images or find_list_images(args.cube)
-    if not list_images:
-        sys.exit(f"list_images.txt not found next to {args.cube} "
-                  f"- pass --list_images explicitly")
-    idates, dates = read_list_images(list_images)
-
     ds = gdal.Open(args.cube)
     if ds is None:
         sys.exit(f"Cannot open {args.cube}")
     nbands = ds.RasterCount
+
+    # dates: --list_images if given, else the cube metadata, else a
+    # list_images.txt found next to the cube
+    list_images = args.list_images
+    if list_images:
+        idates, dates = read_list_images(list_images)
+        dates_src = list_images
+    else:
+        from_cube = read_dates_from_cube(ds)
+        if from_cube is not None:
+            idates, dates = from_cube
+            dates_src = "cube metadata (band descriptions)"
+        else:
+            list_images = find_list_images(args.cube)
+            if not list_images:
+                sys.exit(f"No date found in the band descriptions of {args.cube} and no "
+                          f"list_images.txt next to it - pass --list_images explicitly")
+            idates, dates = read_list_images(list_images)
+            dates_src = list_images + " (no dates in the cube metadata)"
     if nbands != len(dates):
-        sys.exit(f"{args.cube} has {nbands} bands but {list_images} lists "
+        sys.exit(f"{args.cube} has {nbands} bands but {dates_src} gives "
                   f"{len(dates)} dates - they must match")
 
     # pixel/reference-pixel positions in WGS84 lon/lat, from the cube's own
@@ -287,12 +376,13 @@ def main():
     for k, (l, c, (lon, lat)) in enumerate(zip(lines, cols, lonlats)):
         tag = f"Pixel {k}" if npix > 1 else "Pixel"
         print(f"{tag:<17}: line={l}, column={c}"
-              + (f"  (median over {2*args.windowsize+1}x{2*args.windowsize+1})" if args.windowsize else "")
+              + (f"  ({args.stat} over {2*args.windowsize+1}x{2*args.windowsize+1})" if args.windowsize else "")
               + f"  ->  lon={lon:.5f}, lat={lat:.5f}")
     print(f"Reference pixel  : line={args.lineref}, column={args.columnref}"
-          + (f"  (median over {2*wref+1}x{2*wref+1})" if wref else "")
+          + (f"  ({args.stat} over {2*wref+1}x{2*wref+1})" if wref else "")
           + f"  ->  lon={lonref:.5f}, lat={latref:.5f}")
     print(f"Reference image  : {idates[imref]} (band {imref + 1}/{nbands})")
+    print(f"Dates            : {dates_src}")
     print(f"Scale            : {args.scale}  (unit: {unit})")
 
     # decimal-year date of the reference image, captured now (before any
@@ -300,8 +390,44 @@ def main():
     # shifts even if that date is later filtered out of the plot
     imref_date = dates[imref]
 
-    pxs   = [read_pixel_series(ds, l, c, w=args.windowsize) for l, c in zip(lines, cols)]
-    pxref = read_pixel_series(ds, args.lineref, args.columnref, w=wref)
+    zero_ref = detect_zero_reference(ds, imref)
+    print(f"Reference band   : band {imref + 1} is "
+          + ("a zero reference (0 = valid there)" if zero_ref
+             else "regular data (0 = nodata, masked)"))
+    warrs = [read_window(ds, l, c, w=args.windowsize, imref=imref, zero_ref=zero_ref)
+             for l, c in zip(lines, cols)]
+    rarr = read_window(ds, args.lineref, args.columnref, w=wref, imref=imref, zero_ref=zero_ref)
+    vref = np.isfinite(rarr).sum(axis=(1, 2))   # valid window pixels of the reference, per date
+
+    # Per pixel: the time series is set to 0 at the reference image imref. If the pixel
+    # window (or the reference window) has no valid pixel at that date, fall back on the
+    # closest date where both have data (the displacement is then 0 at that date instead;
+    # rates are unaffected, only the constant offset changes).
+    pxs, refband = [], []
+    cache = {}
+    for k, warr in enumerate(warrs):
+        who = f"pixel {k}" if npix > 1 else "the pixel"
+        vpix = np.isfinite(warr).sum(axis=(1, 2))
+        ok = np.flatnonzero((vpix > 0) & (vref > 0))
+        if len(ok) == 0:
+            print(f"  WARNING: {who}: its window and the reference window never have data on "
+                  f"the same date -> empty series. Try a larger --windowsize/--windowrefsize "
+                  f"or another reference pixel.")
+            pxs.append(np.full(nbands, np.nan))
+            refband.append(None)
+            continue
+        bk = imref if (vpix[imref] > 0 and vref[imref] > 0) else int(ok[np.argmin(np.abs(ok - imref))])
+        if bk != imref:
+            side = "its window" if vpix[imref] == 0 else "the reference window"
+            if vpix[imref] == 0 and vref[imref] == 0:
+                side = "its window and the reference window"
+            print(f"  NOTE: {who}: no valid pixel in {side} at the reference image "
+                  f"(band {imref + 1}, {idates[imref]}) -> referenced to the closest common "
+                  f"valid date instead: band {bk + 1}, {idates[bk]}.")
+        if bk not in cache:
+            cache[bk] = series_from_window(rarr, bk, args.stat)
+        pxs.append(series_from_window(warr, bk, args.stat) - cache[bk])
+        refband.append(bk)
 
     # ── localization map: last-date band, cropped around all the pixels and
     # the reference pixel ───────────────────────────────────────────────────
@@ -327,10 +453,9 @@ def main():
 
     del ds
 
-    # temporal referencing (per pixel, band imref -> 0), then spatial
-    # double-difference against the reference pixel
-    pxref = pxref - pxref[imref]
-    disps = [(px - px[imref] - pxref) * args.scale for px in pxs]
+    # temporal referencing and spatial double-difference against the reference
+    # pixel were done above (per window pixel, at band imref or the fallback band)
+    disps = [px * args.scale for px in pxs]
 
     for k, disp in enumerate(disps):
         n_nan = int(np.isnan(disp).sum())
@@ -424,7 +549,7 @@ def main():
     if map_arr is not None:
         lo_r, hi_r, lo_c, hi_c = map_extent
         vmin, vmax = np.nanpercentile(map_arr, [2, 98])
-        im = ax_map.imshow(map_arr, cmap="Greys_r", vmin=vmin, vmax=vmax,
+        im = ax_map.imshow(map_arr, cmap=args.cmap, vmin=vmin, vmax=vmax,
                             extent=(lo_c, hi_c, hi_r, lo_r))  # keep row axis pointing down
 
         # pixel window(s), if a median window was used
@@ -433,20 +558,20 @@ def main():
                 ax_map.add_patch(plt.Rectangle(
                     (c - args.windowsize - 0.5, l - args.windowsize - 0.5),
                     2 * args.windowsize + 1, 2 * args.windowsize + 1,
-                    edgecolor="red", facecolor="none", lw=1))
+                    edgecolor="black", facecolor="none", lw=1))
         if wref:
             ax_map.add_patch(plt.Rectangle(
                 (args.columnref - wref - 0.5, args.lineref - wref - 0.5),
                 2 * wref + 1, 2 * wref + 1,
-                edgecolor="cyan", facecolor="none", lw=1))
+                edgecolor="lime", facecolor="none", lw=1))
 
         for k, (l, c) in enumerate(zip(lines, cols)):
-            ax_map.plot(c, l, "x", color="red", markersize=10,
+            ax_map.plot(c, l, "x", color="black", markersize=10,
                         markeredgewidth=2, label=("pixel" if npix == 1 else "pixels") if k == 0 else None)
             if npix > 1:
                 ax_map.annotate(str(k), (c, l), xytext=(4, 4), textcoords="offset points",
-                                color="red", fontsize="small", fontweight="bold")
-        ax_map.plot(args.columnref, args.lineref, "+", color="cyan", markersize=10,
+                                color="black", fontsize="small", fontweight="bold")
+        ax_map.plot(args.columnref, args.lineref, "+", color="lime", markersize=10,
                     markeredgewidth=2, label="reference")
         ax_map.set_title(f"Dernière date: {last_idate}\n(bande {nbands}/{nbands})",
                           fontsize="small")
